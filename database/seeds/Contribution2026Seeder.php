@@ -71,9 +71,10 @@ class Contribution2026Seeder extends AbstractSeed
         $policyId = $this->fetchContribPolicyId('CONTRIB-2026', 'V1');
 
         // -------------------------------------------------------------------
-        // sss_bracket — full MSC bracket table.
-        //   Floor bracket (0.00–5,499.99) maps sub-₱5,000 earnings to MSC ₱5,000.
-        //   Top bracket (₱35,000+) is open-ended (salary_to NULL) = ceiling.
+        // sss_bracket — full MSC bracket table per SSS Circular No. 2024-006.
+        //   Each MSC covers MSC − 250.00 .. MSC + 249.99 (e.g. MSC 12,000 =
+        //   11,750.00–12,249.99). Below 5,250 → MSC 5,000 (floor row starts
+        //   at 0.00); 34,750+ → MSC 35,000 (salary_to NULL = ceiling).
         // -------------------------------------------------------------------
         $countRow     = $this->fetchRow(
             "SELECT COUNT(*) AS n FROM sss_bracket WHERE contribution_policy_id = {$policyId}"
@@ -83,26 +84,16 @@ class Contribution2026Seeder extends AbstractSeed
         if ($bracketCount === 0) {
             $valueRows = [];
 
-            // Floor bracket: MSC ₱5,000, covers 0.00–5,499.99
-            $valueRows[] = sprintf(
-                '(%d, 0.00, 5499.99, %s, %s, %s, NULL, %s, %s)',
-                $policyId,
-                $this->money($mscFloor * $sssRateEmployee),  // 250.00
-                $this->money($mscFloor * $sssRateEmployer),  // 500.00
-                $this->sqlDate($effectiveFrom),
-                $this->sqlDate($now),
-                $this->sqlDate($now)
-            );
-
-            for ($msc = $mscFloor + $mscStep; $msc <= $mscCeiling; $msc += $mscStep) {
-                $salaryTo = ($msc === $mscCeiling)
+            for ($msc = $mscFloor; $msc <= $mscCeiling; $msc += $mscStep) {
+                $salaryFrom = ($msc === $mscFloor) ? 0.0 : (float) ($msc - $mscStep / 2);
+                $salaryTo   = ($msc === $mscCeiling)
                     ? 'NULL'
-                    : $this->money($msc + $mscStep - 0.01); // e.g. 5,500 → 5,999.99
+                    : $this->money($msc + $mscStep / 2 - 0.01); // e.g. 12,000 → 12,249.99
 
                 $valueRows[] = sprintf(
                     '(%d, %s, %s, %s, %s, %s, NULL, %s, %s)',
                     $policyId,
-                    $this->money((float) $msc),
+                    $this->money($salaryFrom),
                     $salaryTo,
                     $this->money($msc * $sssRateEmployee),
                     $this->money($msc * $sssRateEmployer),
