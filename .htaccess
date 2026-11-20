@@ -1,0 +1,12 @@
+Options -Indexes
+
+RewriteEngine On
+
+# Let public/.htaccess handle all public/ requests
+RewriteRule ^public(/.*)?$ - [L]
+
+# Redirect /wbpms/ to the WBPMS login page
+RewriteRule ^$ /wbpms/public/login [R=302,L]
+
+# Deny direct web access to non-public project files and folders (.env, app, storage, etc.)
+RewriteRule ^ - [F,L]

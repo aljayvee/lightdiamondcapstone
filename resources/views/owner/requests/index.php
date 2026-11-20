@@ -1,0 +1,205 @@
+<?php
+
+use Wbpms\Http\View\Formatter;
+
+/**
+ * View: owner/requests/index  (GET /owner/requests)
+ *
+ * Variables:
+ *   list<array<string,mixed>> $pending      — rows from RequestService::ownerPendingListFiltered()
+ *   list<array<string,mixed>> $actioned     — rows from RequestService::ownerActionedListFiltered()
+ *   list<array<string,mixed>> $requestTypes — for type filter dropdown
+ *   array{type_id:int,search:string} $filters
+ *   string $base, $csrf — injected by ViewRenderer
+ */
+
+$pending      ??= [];
+$actioned     ??= [];
+$requestTypes ??= [];
+$filters      ??= [];
+$base         ??= '';
+
+$typeIcons = [
+    'Leave'       => '🏖',
+    'Overtime'    => '⏰',
+    'CashAdvance' => '💵',
+];
+?>
+
+<div class="page-head">
+    <div>
+        <h1>Request Approvals</h1>
+        <p>Review and act on employee requests, and see your full approval history.</p>
+    </div>
+    <a href="<?= $base ?>/owner/requests/cash-advance-tracker" class="btn btn-secondary">💵 Cash Advance Balances</a>
+</div>
+
+<!-- Filter bar -->
+<div class="card" style="padding:.9rem 1.25rem;margin-bottom:1.25rem">
+    <form method="GET" action="<?= $base ?>/owner/requests" style="display:flex;flex-wrap:wrap;gap:.75rem;align-items:flex-end">
+        <div>
+            <label style="font-size:.8rem;font-weight:500;display:block;margin-bottom:.25rem">Request Type</label>
+            <select name="type_id">
+                <option value="">All types</option>
+                <?php foreach ($requestTypes as $rt): ?>
+                <option value="<?= (int) $rt['request_type_id'] ?>" <?= (int) ($filters['type_id'] ?? 0) === (int) $rt['request_type_id'] ? 'selected' : '' ?>>
+                    <?= Formatter::escape((string) $rt['type_name']) ?>
+                </option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+        <div>
+            <label style="font-size:.8rem;font-weight:500;display:block;margin-bottom:.25rem">Employee</label>
+            <input type="search" name="search" value="<?= Formatter::escape((string) ($filters['search'] ?? '')) ?>" placeholder="Name or employee no.">
+        </div>
+        <button type="submit" class="btn btn-primary">Apply Filters</button>
+        <a href="<?= $base ?>/owner/requests" class="btn btn-secondary">Clear</a>
+    </form>
+</div>
+
+<?php if ($pending === []): ?>
+<div class="card" style="padding:2.5rem;text-align:center;color:#6b7280;margin-bottom:1.5rem">
+    <p style="margin:0;font-size:1rem">No requests are awaiting your approval<?= ($filters['type_id'] ?? 0) > 0 || ($filters['search'] ?? '') !== '' ? ' for the current filters' : '' ?>.</p>
+</div>
+<?php else: ?>
+
+<!-- Summary -->
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-bottom:1.5rem">
+    <?php
+    $leaves = count(array_filter($pending, fn($r) => $r['type_name'] === 'Leave'));
+    $ot     = count(array_filter($pending, fn($r) => $r['type_name'] === 'Overtime'));
+    $ca     = count(array_filter($pending, fn($r) => $r['type_name'] === 'CashAdvance'));
+    ?>
+    <div class="stat-card">
+        <span class="stat-value"><?= count($pending) ?></span>
+        <span class="stat-label">Pending Your Approval</span>
+    </div>
+    <div class="stat-card" style="border-left:4px solid #6366f1">
+        <span class="stat-value"><?= $leaves ?></span>
+        <span class="stat-label">Leave Requests</span>
+    </div>
+    <div class="stat-card" style="border-left:4px solid #f59e0b">
+        <span class="stat-value"><?= $ot + $ca ?></span>
+        <span class="stat-label">OT &amp; Cash Advances</span>
+    </div>
+</div>
+
+<div class="card" style="padding:0;overflow:hidden;margin-bottom:2rem">
+    <div style="padding:14px 20px;border-bottom:1px solid var(--line)">
+        <strong>Awaiting Your Approval</strong>
+    </div>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Employee</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>Submitted</th>
+                <th>HR Pre-approved</th>
+                <th>Reason</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+        <?php foreach ($pending as $r):
+            $statusBadge = match ($r['status']) {
+                'HRApproved' => 'badge-blue',
+                'Returned'   => 'badge-yellow',
+                default      => 'badge-gray',
+            };
+        ?>
+        <tr>
+            <td style="color:#9ca3af;font-size:.8rem"><?= (int) $r['request_id'] ?></td>
+            <td>
+                <strong><?= Formatter::escape((string) $r['employee_name']) ?></strong><br>
+                <small style="color:#6b7280"><?= Formatter::escape((string) $r['employee_number']) ?></small>
+            </td>
+            <td>
+                <?= $typeIcons[$r['type_name']] ?? '' ?>
+                <?= Formatter::escape((string) $r['type_name']) ?>
+            </td>
+            <td><span class="badge <?= $statusBadge ?>"><?= Formatter::escape((string) $r['status']) ?></span></td>
+            <td style="white-space:nowrap;font-size:.85rem"><?= Formatter::date($r['submitted_at']) ?></td>
+            <td style="white-space:nowrap;font-size:.85rem;color:#6366f1"><?= Formatter::date($r['hr_reviewed_at'] ?? null) ?></td>
+            <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.85rem">
+                <?= Formatter::escape((string) $r['reason']) ?>
+            </td>
+            <td style="white-space:nowrap">
+                <a href="<?= $base ?>/owner/requests/<?= (int) $r['request_id'] ?>"
+                   class="btn btn-secondary" style="font-size:.8rem;padding:.3rem .75rem">
+                    Review →
+                </a>
+            </td>
+        </tr>
+        <?php endforeach; ?>
+        </tbody>
+    </table>
+</div>
+
+<?php endif; ?>
+
+<!-- ================================================================
+     ACTIONED HISTORY — all Approved and Cancelled requests
+     ================================================================ -->
+<div class="card" style="padding:0;overflow:hidden">
+    <div style="padding:14px 20px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center">
+        <strong>Approval History</strong>
+        <span style="font-size:.8rem;color:#6b7280"><?= count($actioned) ?> record(s)</span>
+    </div>
+    <?php if ($actioned === []): ?>
+    <div style="padding:2rem;text-align:center;color:#9ca3af;font-size:.875rem">
+        No actioned requests<?= ($filters['type_id'] ?? 0) > 0 || ($filters['search'] ?? '') !== '' ? ' match the current filters' : ' yet' ?>.
+    </div>
+    <?php else: ?>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Employee</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>Submitted</th>
+                <th>Actioned</th>
+                <th>Note</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+        <?php foreach ($actioned as $r):
+            $badgeClass = $r['status'] === 'Approved' ? 'badge-green' : 'badge-gray';
+        ?>
+        <tr>
+            <td style="color:#9ca3af;font-size:.8rem"><?= (int) $r['request_id'] ?></td>
+            <td>
+                <strong><?= Formatter::escape((string) $r['employee_name']) ?></strong><br>
+                <small style="color:#6b7280"><?= Formatter::escape((string) $r['employee_number']) ?></small>
+            </td>
+            <td>
+                <?= $typeIcons[$r['type_name']] ?? '' ?>
+                <?= Formatter::escape((string) $r['type_name']) ?>
+            </td>
+            <td>
+                <span class="badge <?= $badgeClass ?>">
+                    <?= Formatter::escape((string) $r['status']) ?>
+                </span>
+            </td>
+            <td style="white-space:nowrap;font-size:.85rem"><?= Formatter::date($r['submitted_at']) ?></td>
+            <td style="white-space:nowrap;font-size:.85rem;color:#6b7280">
+                <?= Formatter::date($r['owner_reviewed_at'] ?? null) ?>
+            </td>
+            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.8rem;color:#6b7280">
+                <?= $r['owner_notes'] ? Formatter::escape((string) $r['owner_notes']) : '—' ?>
+            </td>
+            <td style="white-space:nowrap">
+                <a href="<?= $base ?>/owner/requests/<?= (int) $r['request_id'] ?>"
+                   class="btn btn-secondary btn-sm">
+                    View →
+                </a>
+            </td>
+        </tr>
+        <?php endforeach; ?>
+        </tbody>
+    </table>
+    <?php endif; ?>
+</div>
