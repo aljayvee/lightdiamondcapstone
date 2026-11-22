@@ -14,7 +14,7 @@ $value = static fn (string $key, string $fallback = ''): string => (string) ($ol
         <h1>Manual Payroll Adjustment</h1>
         <p>Add a documented earning or deduction before submitting payroll for approval.</p>
     </div>
-    <a href="<?= $base ?>/hr/payroll/<?= $runId ?>" class="btn btn-secondary">← Back to Payroll Run</a>
+    <a href="<?= $base ?>/hr/payroll/<?= $runId ?>" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Payroll Run</a>
 </div>
 
 <?php if ($errors !== []): ?>
@@ -38,7 +38,7 @@ $value = static fn (string $key, string $fallback = ''): string => (string) ($ol
         <input type="hidden" name="_csrf" value="<?= Formatter::escape($csrf) ?>">
 
         <div>
-            <label for="adjustment_kind">Adjustment type</label>
+            <label for="adjustment_kind">Adjustment Type</label>
             <select id="adjustment_kind" name="adjustment_kind" required>
                 <option value="">Select one</option>
                 <option value="earning" <?= $value('adjustment_kind') === 'earning' ? 'selected' : '' ?>>Additional pay / earning</option>
@@ -50,7 +50,7 @@ $value = static fn (string $key, string $fallback = ''): string => (string) ($ol
             <input id="amount" name="amount" type="number" min="0.01" max="1000000" step="0.01" required value="<?= Formatter::escape($value('amount')) ?>" style="max-width:240px">
         </div>
         <div style="margin-top:1rem">
-            <label for="reason">Reason and supporting reference</label>
+            <label for="reason">Reason and Supporting Evidence</label>
             <textarea id="reason" name="reason" required maxlength="1000" rows="4" placeholder="e.g. Approved allowance, loan repayment, or correction reference."><?= Formatter::escape($value('reason')) ?></textarea>
         </div>
         <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:.75rem 1rem;margin:1rem 0;color:#92400e;font-size:.875rem">

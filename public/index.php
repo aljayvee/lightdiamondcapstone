@@ -18,6 +18,11 @@ require_once APP_ROOT . '/vendor/autoload.php';
 // Register a last-resort error handler before bootstrapping
 set_exception_handler(static function (\Throwable $e): void {
     $env = $_ENV['APP_ENV'] ?? 'production';
+    \Wbpms\Infrastructure\Logging\ErrorLog::exception($e);
+    $reference = \Wbpms\Infrastructure\Logging\ErrorLog::reference();
+    if (!headers_sent()) {
+        header('X-Error-Reference: ' . $reference);
+    }
     http_response_code(500);
 
     // Detect whether the client expects HTML (browser) or JSON (API/AJAX).
@@ -26,21 +31,21 @@ set_exception_handler(static function (\Throwable $e): void {
         || (!str_contains($acceptHeader, 'application/json') && $acceptHeader !== '');
 
     if ($wantsHtml) {
-        // Render the 500 HTML view so browser users see a readable error page.
+        // Render the friendly error page. It never shows the status code,
+        // "Internal Server Error", or technical text - only the reference.
         header('Content-Type: text/html; charset=utf-8');
-        $message = $env === 'development'
-            ? htmlspecialchars($e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine(), ENT_QUOTES, 'UTF-8')
-            : 'An unexpected error occurred. Please try again later.';
-        $trace = $env === 'development'
-            ? '<pre style="font-size:12px;overflow:auto">' . htmlspecialchars($e->getTraceAsString(), ENT_QUOTES, 'UTF-8') . '</pre>'
-            : '';
+        $detail = $env === 'development'
+            ? $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine()
+            : null;
         if (defined('APP_ROOT') && file_exists(APP_ROOT . '/resources/views/errors/500.php')) {
-            $detail = $message; // expose to 500.php's $detail variable
             require APP_ROOT . '/resources/views/errors/500.php';
         } else {
             // Absolute fallback if the view itself cannot be loaded
-            echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>500 Internal Server Error</title></head>'
-               . '<body><h1>500 — Internal Server Error</h1><p>' . $message . '</p>' . $trace . '</body></html>';
+            echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Something went wrong</title></head>'
+               . '<body style="font-family:sans-serif;text-align:center;padding:3rem">'
+               . '<h1>Something went wrong on our side</h1>'
+               . '<p>Please try again in a moment. If it keeps happening, contact the system administrator.</p>'
+               . '<p>Reference code: ' . htmlspecialchars($reference, ENT_QUOTES, 'UTF-8') . '</p></body></html>';
         }
         return;
     }
@@ -50,7 +55,7 @@ set_exception_handler(static function (\Throwable $e): void {
     if ($env === 'development') {
         echo json_encode([
             'error' => [
-                'code'    => 'INTERNAL_SERVER_ERROR',
+                'code'    => 'UNEXPECTED_ERROR',
                 'message' => $e->getMessage(),
                 'file'    => $e->getFile(),
                 'line'    => $e->getLine(),
@@ -60,8 +65,9 @@ set_exception_handler(static function (\Throwable $e): void {
     } else {
         echo json_encode([
             'error' => [
-                'code'    => 'INTERNAL_SERVER_ERROR',
-                'message' => 'An unexpected error occurred. Please try again later.',
+                'code'      => 'UNEXPECTED_ERROR',
+                'message'   => 'Something went wrong and your request could not be completed. Please try again.',
+                'reference' => $reference,
             ],
         ]);
     }

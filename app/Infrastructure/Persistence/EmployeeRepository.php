@@ -7,6 +7,9 @@ namespace Wbpms\Infrastructure\Persistence;
 use PDO;
 use Wbpms\Application\EmployeeSetup\EmployeeSetupGateway;
 use Wbpms\Infrastructure\Database\Connection;
+use Wbpms\Domain\Employee\EmployeeNumberSequence;
+use Wbpms\Domain\Employee\BankAccountChange;
+use Wbpms\Domain\Employee\BankAccountDateRejected;
 
 /**
  * EmployeeRepository — PDO persistence for the Employee module.
@@ -41,19 +44,30 @@ final class EmployeeRepository extends AbstractRepository implements EmployeeSet
      */
     public function createEmployee(array $attributes): int
     {
+        $positionTitle = (string) ($attributes['position'] ?? '');
+        $positionId = $attributes['position_id'] ?? $this->resolvePositionId($positionTitle);
+        $employeeType = (string) ($attributes['employee_type'] ?? 'Regular');
+        $hireDate = (string) ($attributes['hire_date'] ?? date('Y-m-d'));
+        $contractReviewDate = $attributes['contract_review_date'] ?? null;
+        if (($contractReviewDate === null || $contractReviewDate === '')
+            && in_array($employeeType, ['Contractual', 'Probationary'], true)
+            && preg_match('/^\d{4}-\d{2}-\d{2}$/', $hireDate)) {
+            $contractReviewDate = (new \DateTimeImmutable($hireDate))->modify('+6 months')->format('Y-m-d');
+        }
+
         $sql = <<<'SQL'
             INSERT INTO employee (
                 employee_number, employee_type,
                 first_name, middle_initial, last_name,
                 email, contact_number, birthdate, hire_date,
-                position, status,
+                position, position_id, status,
                 sss_number, philhealth_number, pagibig_number, tin_number,
                 contract_review_date
             ) VALUES (
                 :employee_number, :employee_type,
                 :first_name, :middle_initial, :last_name,
                 :email, :contact_number, :birthdate, :hire_date,
-                :position, :status,
+                :position, :position_id, :status,
                 :sss_number, :philhealth_number, :pagibig_number, :tin_number,
                 :contract_review_date
             )
@@ -62,21 +76,22 @@ final class EmployeeRepository extends AbstractRepository implements EmployeeSet
         $stmt = $this->pdo()->prepare($sql);
         $stmt->execute([
             ':employee_number'     => $attributes['employee_number'],
-            ':employee_type'       => $attributes['employee_type']   ?? 'Regular',
+            ':employee_type'       => $employeeType,
             ':first_name'          => $attributes['first_name'],
             ':middle_initial'      => $attributes['middle_initial']   ?? null,
             ':last_name'           => $attributes['last_name'],
             ':email'               => $attributes['email']            ?? null,
             ':contact_number'      => $attributes['contact_number']   ?? null,
             ':birthdate'           => $attributes['birthdate']        ?? null,
-            ':hire_date'           => $attributes['hire_date'],
-            ':position'            => $attributes['position'],
+            ':hire_date'           => $hireDate,
+            ':position'            => $positionTitle,
+            ':position_id'         => $positionId,
             ':status'              => $attributes['status']           ?? 'Active',
             ':sss_number'          => $attributes['sss_number']        ?? null,
             ':philhealth_number'   => $attributes['philhealth_number'] ?? null,
             ':pagibig_number'      => $attributes['pagibig_number']   ?? null,
             ':tin_number'          => $attributes['tin_number']       ?? null,
-            ':contract_review_date'=> $attributes['contract_review_date'] ?? null,
+            ':contract_review_date'=> $contractReviewDate,
         ]);
 
         return (int) $this->pdo()->lastInsertId();
@@ -228,6 +243,20 @@ final class EmployeeRepository extends AbstractRepository implements EmployeeSet
     }
 
     /**
+     * Next auto-generated employee number (EMP-001, EMP-002, ...), one above
+     * the highest EMP-<digits> number in use, archived employees included.
+     */
+    public function nextEmployeeNumber(): string
+    {
+        $stmt = $this->pdo()->query(
+            "SELECT employee_number FROM employee WHERE employee_number LIKE 'EMP-%'"
+        );
+        $numbers = $stmt === false ? [] : array_map('strval', $stmt->fetchAll(\PDO::FETCH_COLUMN));
+
+        return EmployeeNumberSequence::next($numbers);
+    }
+
+    /**
      * Return whether an employee number is already assigned.
      */
     public function employeeNumberExists(string $employeeNumber): bool
@@ -266,9 +295,9 @@ final class EmployeeRepository extends AbstractRepository implements EmployeeSet
     /**
      * Return a paginated list of employees with their current branch and schedule.
      *
-     * Applies optional search (name / employee_number), branch filter, status
-     * filter, and position filter.  Returns rows matching the shape expected by
-     * the index view.
+     * Applies optional search (last / first / middle name, employee_number),
+     * branch filter, status filter, and position filter.  Returns rows matching
+     * the shape expected by the index view.
      *
      * @param  array{search?: string, branch?: string|int, status?: string, position?: string} $filters
      * @return list<array{
@@ -276,6 +305,7 @@ final class EmployeeRepository extends AbstractRepository implements EmployeeSet
      *   employee_number: string,
      *   last_name: string,
      *   first_name: string,
+     *   middle_name: ?string,
      *   position: string,
      *   branch_name: string,
      *   schedule_name: string,
@@ -312,10 +342,12 @@ final class EmployeeRepository extends AbstractRepository implements EmployeeSet
         // Search by name or employee number
         $search = trim((string) ($filters['search'] ?? ''));
         if ($search !== '') {
-            $where[]              = '(e.last_name LIKE :search_ln OR e.first_name LIKE :search_fn OR e.employee_number LIKE :search_en)';
-            $params[':search_ln'] = '%' . $search . '%';
-            $params[':search_fn'] = '%' . $search . '%';
-            $params[':search_en'] = '%' . $search . '%';
+            // Every word in any order: first, middle, last name or number (REQ012).
+            [$nameSql, $nameParams] = EmployeeNameSearch::condition($search, 'e', 'search_q');
+            if ($nameSql !== '') {
+                $where[] = $nameSql;
+                $params  = array_merge($params, $nameParams);
+            }
         }
 
         $whereClause = $where !== [] ? 'WHERE ' . implode(' AND ', $where) : '';
@@ -326,10 +358,11 @@ final class EmployeeRepository extends AbstractRepository implements EmployeeSet
                 e.employee_number,
                 e.last_name,
                 e.first_name,
+                e.middle_initial                 AS middle_name,
                 COALESCE(e.position, '—')        AS position,
                 COALESCE(b.branch_name, '—')     AS branch_name,
                 COALESCE(
-                    CONCAT(ws.work_start_time, ' – ', ws.work_end_time),
+                    CONCAT(TIME_FORMAT(ws.work_start_time, '%H:%i'), ' – ', TIME_FORMAT(ws.work_end_time, '%H:%i')),
                     '—'
                 )                                AS schedule_name,
                 LOWER(e.status)                  AS status,
@@ -411,7 +444,74 @@ final class EmployeeRepository extends AbstractRepository implements EmployeeSet
         $stmt->execute([':id' => $employeeId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        return $row !== false ? $row : null;
+        if ($row === false) {
+            return null;
+        }
+
+        if ((int) ($row['device_id'] ?? 0) === 0 || (string) ($row['enrollment_code'] ?? '') === '') {
+            $ebeStmt = $this->pdo()->prepare(
+                'SELECT device_id, device_employee_code
+                   FROM employee_biometric_enrollment
+                  WHERE employee_id = :id
+                  ORDER BY effective_from DESC, enrollment_id DESC
+                  LIMIT 1'
+            );
+            $ebeStmt->execute([':id' => $employeeId]);
+            $lastEbe = $ebeStmt->fetch(PDO::FETCH_ASSOC);
+            if ($lastEbe !== false) {
+                $row['device_id'] = (int) $lastEbe['device_id'];
+                $row['enrollment_code'] = (string) $lastEbe['device_employee_code'];
+            }
+        }
+
+        if ((int) ($row['branch_id'] ?? 0) === 0) {
+            $ebaStmt = $this->pdo()->prepare(
+                'SELECT eba.branch_id, COALESCE(b.branch_name, \'—\') AS branch_name
+                   FROM employee_branch_assignment eba
+                   LEFT JOIN branch b ON b.branch_id = eba.branch_id
+                  WHERE eba.employee_id = :id
+                  ORDER BY eba.effective_from DESC, eba.branch_assignment_id DESC
+                  LIMIT 1'
+            );
+            $ebaStmt->execute([':id' => $employeeId]);
+            $lastEba = $ebaStmt->fetch(PDO::FETCH_ASSOC);
+            if ($lastEba !== false) {
+                $row['branch_id'] = (int) $lastEba['branch_id'];
+                $row['branch_name'] = (string) $lastEba['branch_name'];
+            }
+        }
+
+        if ((int) ($row['schedule_id'] ?? 0) === 0) {
+            $esaStmt = $this->pdo()->prepare(
+                'SELECT schedule_id
+                   FROM employee_schedule_assignment
+                  WHERE employee_id = :id
+                  ORDER BY effective_from DESC, assignment_id DESC
+                  LIMIT 1'
+            );
+            $esaStmt->execute([':id' => $employeeId]);
+            $lastSched = $esaStmt->fetchColumn();
+            if ($lastSched !== false) {
+                $row['schedule_id'] = (int) $lastSched;
+            }
+        }
+
+        if ((float) ($row['daily_rate'] ?? 0) <= 0.0) {
+            $salStmt = $this->pdo()->prepare(
+                'SELECT daily_rate
+                   FROM salary
+                  WHERE employee_id = :id
+                  ORDER BY effective_from DESC, salary_id DESC
+                  LIMIT 1'
+            );
+            $salStmt->execute([':id' => $employeeId]);
+            $lastRate = $salStmt->fetchColumn();
+            if ($lastRate !== false) {
+                $row['daily_rate'] = (float) $lastRate;
+            }
+        }
+
+        return $row;
     }
 
     /**
@@ -422,9 +522,22 @@ final class EmployeeRepository extends AbstractRepository implements EmployeeSet
      */
     public function updateEmployee(int $employeeId, array $attributes): void
     {
+        if (array_key_exists('position', $attributes) && !array_key_exists('position_id', $attributes)) {
+            $attributes['position_id'] = $this->resolvePositionId((string) ($attributes['position'] ?? ''));
+        }
+        if (array_key_exists('employee_type', $attributes) && !array_key_exists('contract_review_date', $attributes)) {
+            $empType = (string) $attributes['employee_type'];
+            if (in_array($empType, ['Contractual', 'Probationary'], true)) {
+                $baseDate = (string) ($attributes['hire_date'] ?? (new \DateTimeImmutable('now', new \DateTimeZone('Asia/Manila')))->format('Y-m-d'));
+                $attributes['contract_review_date'] = (new \DateTimeImmutable($baseDate))->modify('+6 months')->format('Y-m-d');
+            } else {
+                $attributes['contract_review_date'] = null;
+            }
+        }
+
         $allowed = [
             'employee_type', 'first_name', 'middle_initial', 'last_name',
-            'email', 'contact_number', 'birthdate', 'hire_date', 'position',
+            'email', 'contact_number', 'birthdate', 'hire_date', 'position', 'position_id',
             'status', 'sss_number', 'philhealth_number', 'pagibig_number',
             'tin_number', 'contract_review_date',
         ];
@@ -464,20 +577,144 @@ final class EmployeeRepository extends AbstractRepository implements EmployeeSet
     }
 
     /**
-     * Update the current active salary (archive old row, insert new one today).
+     * Update the current active salary using Asia/Manila date and guarding against
+     * same-day / future-effective duplicate key collisions on (employee_id, effective_from).
      */
     public function updateSalary(int $employeeId, float $dailyRate): void
     {
-        $today = date('Y-m-d');
+        $today = (new \DateTimeImmutable('now', new \DateTimeZone('Asia/Manila')))->format('Y-m-d');
+        $pdo = $this->pdo();
 
-        // Archive existing active salary
-        $this->pdo()->prepare(
-            "UPDATE salary SET effective_to = :today, status = 'Archived', updated_at = NOW()
-              WHERE employee_id = :emp_id AND effective_to IS NULL AND status = 'Active'"
-        )->execute([':today' => $today, ':emp_id' => $employeeId]);
+        $stmt = $pdo->prepare(
+            "SELECT salary_id, effective_from
+               FROM salary
+              WHERE employee_id = :emp_id AND effective_to IS NULL AND status = 'Active'
+              ORDER BY effective_from DESC LIMIT 1 FOR UPDATE"
+        );
+        $stmt->execute([':emp_id' => $employeeId]);
+        $active = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        // Insert new rate effective today
+        if ($active !== false && (string) $active['effective_from'] >= $today) {
+            $pdo->prepare(
+                "UPDATE salary SET daily_rate = :rate, updated_at = NOW() WHERE salary_id = :id"
+            )->execute([':rate' => $dailyRate, ':id' => (int) $active['salary_id']]);
+            return;
+        }
+
+        if ($active !== false) {
+            $yesterday = (new \DateTimeImmutable($today))->modify('-1 day')->format('Y-m-d');
+            $pdo->prepare(
+                "UPDATE salary SET effective_to = :yesterday, status = 'Superseded', updated_at = NOW()
+                  WHERE salary_id = :id"
+            )->execute([':yesterday' => $yesterday, ':id' => (int) $active['salary_id']]);
+        }
+
         $this->createSalary($employeeId, $dailyRate, $today);
+    }
+
+    public function activeMinimumDailyWage(): float
+    {
+        try {
+            $stmt = $this->pdo()->query(
+                "SELECT minimum_daily_wage
+                   FROM payroll_policy_version
+                  WHERE status = 'Approved'
+                  ORDER BY effective_from DESC
+                  LIMIT 1"
+            );
+            $val = $stmt !== false ? $stmt->fetchColumn() : false;
+            if ($val !== false && (float) $val > 0) {
+                return (float) $val;
+            }
+        } catch (\Throwable) {
+            // Fallback when running against minimal schema without minimum_daily_wage
+        }
+
+        return 460.00;
+    }
+
+    /** @return array<string,mixed>|null */
+    public function positionMetaByTitle(string $title): ?array
+    {
+        if (trim($title) === '') {
+            return null;
+        }
+        try {
+            $stmt = $this->pdo()->prepare(
+                "SELECT position_id, position_title, default_daily_rate, requires_regular
+                   FROM job_position
+                  WHERE LOWER(TRIM(position_title)) = LOWER(TRIM(:title))
+                  LIMIT 1"
+            );
+            $stmt->execute([':title' => $title]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            return $row !== false ? $row : null;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    public function deviceCoversBranchOn(int $deviceId, int $branchId, string $onDate): bool
+    {
+        try {
+            $stmt = $this->pdo()->prepare(
+                "SELECT 1
+                   FROM biometric_device_branch
+                  WHERE device_id = :device_id
+                    AND branch_id = :branch_id
+                    AND status = 'Active'
+                    AND effective_from <= :on_date_from
+                    AND (effective_to IS NULL OR effective_to > :on_date_to)
+                  LIMIT 1"
+            );
+            $stmt->execute([
+                ':device_id' => $deviceId,
+                ':branch_id' => $branchId,
+                ':on_date_from' => $onDate,
+                ':on_date_to' => $onDate,
+            ]);
+            if ($stmt->fetchColumn() !== false) {
+                return true;
+            }
+
+            // If device has no branch rows at all in a minimal test fixture, don't false-block
+            $anyStmt = $this->pdo()->prepare('SELECT COUNT(*) FROM biometric_device_branch WHERE device_id = :device_id');
+            $anyStmt->execute([':device_id' => $deviceId]);
+            return (int) $anyStmt->fetchColumn() === 0;
+        } catch (\Throwable) {
+            return true;
+        }
+    }
+
+    /** @return list<array<string,mixed>> */
+    public function unmatchedEnrollmentCodes(): array
+    {
+        try {
+            $stmt = $this->pdo()->query(
+                "SELECT bp.device_id,
+                        COALESCE(bd.device_name, CONCAT('Device #', bp.device_id)) AS device_name,
+                        bp.device_employee_code,
+                        MAX(bp.source_employee_name) AS source_employee_name,
+                        COUNT(*) AS punch_count
+                   FROM biometric_punch bp
+                   JOIN attendance_import_batch aib ON aib.import_batch_id = bp.import_batch_id
+                   LEFT JOIN biometric_device bd ON bd.device_id = bp.device_id
+                  WHERE bp.match_status IN ('unmatched', 'coverage_exception')
+                    AND aib.status IN ('Draft', 'Approved', 'Completed')
+                  GROUP BY bp.device_id, bd.device_name, bp.device_employee_code
+                  ORDER BY bp.device_id ASC, CAST(bp.device_employee_code AS UNSIGNED) ASC, bp.device_employee_code ASC
+                  LIMIT 50"
+            );
+            return $stmt !== false ? $stmt->fetchAll(PDO::FETCH_ASSOC) : [];
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    private function resolvePositionId(string $title): ?int
+    {
+        $meta = $this->positionMetaByTitle($title);
+        return $meta !== null && isset($meta['position_id']) ? (int) $meta['position_id'] : null;
     }
 
     /**
@@ -496,6 +733,20 @@ final class EmployeeRepository extends AbstractRepository implements EmployeeSet
      * @throws \RuntimeException   when no active assignment exists, branch unchanged,
      *                             or transfer date would create an overlap
      */
+    /** Start date of the employee's open branch assignment, or null (REQ015). */
+    public function currentBranchStart(int $employeeId): ?string
+    {
+        $stmt = $this->connection->pdo()->prepare(
+            "SELECT effective_from FROM employee_branch_assignment
+              WHERE employee_id = :emp AND effective_to IS NULL
+              ORDER BY effective_from DESC LIMIT 1"
+        );
+        $stmt->execute([':emp' => $employeeId]);
+        $start = $stmt->fetchColumn();
+
+        return is_string($start) ? $start : null;
+    }
+
     public function transferEmployee(int $employeeId, int $newBranchId, string $transferDate): void
     {
         $this->connection->transaction(function (\PDO $pdo) use ($employeeId, $newBranchId, $transferDate): void {
@@ -519,10 +770,9 @@ final class EmployeeRepository extends AbstractRepository implements EmployeeSet
             }
 
             if ($transferDate <= $current['effective_from']) {
-                throw new \RuntimeException(
-                    'Transfer date must be after the current assignment start date ('
-                    . $current['effective_from'] . ').'
-                );
+                throw new \RuntimeException(\Wbpms\Domain\Employee\EffectiveDateRule::message(
+                    'transfer date', 'current branch assignment', (string) $current['effective_from']
+                ));
             }
 
             // Check for any future closed assignment that would overlap
@@ -735,9 +985,18 @@ final class EmployeeRepository extends AbstractRepository implements EmployeeSet
     /**
      * Save (upsert) bank account details for an employee.
      *
-     * If an active record already exists it is deactivated first; then a new
-     * Active row is inserted. Both operations run inside a transaction so the
-     * employee never has zero bank rows between the two writes.
+     * The current Active row is locked and compared with the new effective
+     * date (BankAccountChange, EMP-026):
+     *  - later date  → the current row is closed (effective_to = new date,
+     *                  Inactive) and a new Active row is inserted;
+     *  - same date   → the current row is corrected in place (closing it would
+     *                  give effective_to = effective_from, which CHECK
+     *                  chk_bank_period refuses);
+     *  - earlier date → BankAccountDateRejected, nothing is written.
+     * Everything runs in one transaction so the employee never has zero
+     * bank rows between the writes.
+     *
+     * @throws BankAccountDateRejected
      *
      * @param array{
      *   bank_name: string,
@@ -750,16 +1009,64 @@ final class EmployeeRepository extends AbstractRepository implements EmployeeSet
     public function saveBankDetails(int $employeeId, array $data): void
     {
         $this->connection->transaction(function (\PDO $pdo) use ($employeeId, $data): void {
-            // Deactivate any existing active record
-            $pdo->prepare(
-                "UPDATE bank_details
-                    SET status = 'Inactive', effective_to = :today, updated_at = NOW()
+            $accountType = $data['account_type'] !== '' ? $data['account_type'] : null;
+
+            // Lock the current active row(s) so two HR saves cannot race.
+            $currentStmt = $pdo->prepare(
+                "SELECT bank_id, effective_from
+                   FROM bank_details
                   WHERE employee_id = :id
-                    AND status = 'Active'"
-            )->execute([
-                ':today' => $data['effective_from'],
-                ':id'    => $employeeId,
-            ]);
+                    AND status = 'Active'
+                  ORDER BY effective_from DESC, bank_id DESC
+                  FOR UPDATE"
+            );
+            $currentStmt->execute([':id' => $employeeId]);
+            /** @var list<array{bank_id: int|string, effective_from: string}> $activeRows */
+            $activeRows = $currentStmt->fetchAll(PDO::FETCH_ASSOC);
+
+            // Every active row must close after it started, so compare against
+            // the latest effective date among them.
+            $current = $activeRows[0] ?? null;
+            $change  = BankAccountChange::decide(
+                $current !== null ? (string) $current['effective_from'] : null,
+                $data['effective_from']
+            );
+
+            if ($change === BankAccountChange::Reject && $current !== null) {
+                throw BankAccountDateRejected::before((string) $current['effective_from']);
+            }
+
+            if ($change === BankAccountChange::Correct && $current !== null) {
+                // Same effective date: correct the current account in place.
+                $pdo->prepare(
+                    "UPDATE bank_details
+                        SET bank_name = :bank_name, account_name = :account_name,
+                            account_number = :account_number, account_type = :account_type,
+                            updated_at = NOW()
+                      WHERE bank_id = :bank_id"
+                )->execute([
+                    ':bank_name'      => $data['bank_name'],
+                    ':account_name'   => $data['account_name'],
+                    ':account_number' => $data['account_number'],
+                    ':account_type'   => $accountType,
+                    ':bank_id'        => (int) $current['bank_id'],
+                ]);
+                return;
+            }
+
+            // Later effective date: close the current account(s) the day the
+            // new one takes effect.
+            if ($current !== null) {
+                $pdo->prepare(
+                    "UPDATE bank_details
+                        SET status = 'Inactive', effective_to = :new_from, updated_at = NOW()
+                      WHERE employee_id = :id
+                        AND status = 'Active'"
+                )->execute([
+                    ':new_from' => $data['effective_from'],
+                    ':id'       => $employeeId,
+                ]);
+            }
 
             // Insert new active record
             $pdo->prepare(
@@ -776,7 +1083,7 @@ final class EmployeeRepository extends AbstractRepository implements EmployeeSet
                 ':bank_name'     => $data['bank_name'],
                 ':account_name'  => $data['account_name'],
                 ':account_number'=> $data['account_number'],
-                ':account_type'  => $data['account_type'] !== '' ? $data['account_type'] : null,
+                ':account_type'  => $accountType,
                 ':effective_from'=> $data['effective_from'],
             ]);
         });

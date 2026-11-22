@@ -6,8 +6,10 @@ namespace Wbpms\Application;
 
 use PDO;
 use RuntimeException;
+use Wbpms\Domain\Leave\LeaveDayCounter;
 use Wbpms\Domain\Payroll\ApprovedOvertimeCalculator;
 use Wbpms\Infrastructure\Database\Connection;
+use Wbpms\Infrastructure\Persistence\WorkCalendarRepository;
 
 /**
  * RequestService — application service for leave/overtime/cash-advance requests.
@@ -34,17 +36,26 @@ use Wbpms\Infrastructure\Database\Connection;
  *   - Only Pending or Returned requests may be pre-approved by HR.
  *   - Only HRApproved requests may be finally approved or returned by Owner.
  *   - Leave ledger debit and CashAdvance obligation are created on Owner final approval.
- *   - Leave balance is checked against the leave_entitlement before submission;
- *     if no entitlement row exists for the year, a 4-day default is auto-provisioned.
- *   - Leave days are calculated as business days (inclusive) from start_date to end_date.
+ *   - Leave balance is checked against the leave_entitlement before submission
+ *     (minus the employee's other leave requests still waiting for approval)
+ *     and again, with the entitlement row locked, on Owner final approval.
+ *     If no entitlement row exists for the year, a 4-day default is auto-provisioned.
+ *   - Leave days are the scheduled working days in the range that are not
+ *     holidays: the same days payroll pays. Rest days are not charged.
+ *   - Leave and overtime cannot be submitted or approved for dates already
+ *     covered by an Approved payroll run (it could never be paid).
  */
 final class RequestService
 {
     private ApprovedOvertimeCalculator $approvedOvertimeCalculator;
+    private LeaveDayCounter $leaveDayCounter;
+    private WorkCalendarRepository $calendar;
 
     public function __construct(private Connection $connection)
     {
         $this->approvedOvertimeCalculator = new ApprovedOvertimeCalculator();
+        $this->leaveDayCounter = new LeaveDayCounter();
+        $this->calendar = new WorkCalendarRepository($connection);
     }
 
     // -----------------------------------------------------------------------
@@ -86,6 +97,7 @@ final class RequestService
         }
 
         $typeName = $this->resolveTypeName($typeId);
+        $leaveDayCount = 0.0;
 
         // --- Type-specific validation -----------------------------------------
 
@@ -103,13 +115,12 @@ final class RequestService
                 throw new RuntimeException('Leave end date must be on or after start date.');
             }
 
-            $daysRequested = $this->calcLeaveDays($startDate, $endDate);
-            if ($daysRequested <= 0.0) {
-                throw new RuntimeException('Leave request must cover at least one day.');
-            }
+            $leaveDates    = $this->chargeableLeaveDates($employeeId, $startDate, $endDate);
+            $leaveDayCount = (float) count($leaveDates);
+            $this->assertNotInApprovedPayroll($employeeId, $leaveDates, 'Leave');
 
-            // REQ078: check sick-leave balance
-            $this->assertLeaveBalance($employeeId, $daysRequested);
+            // REQ078: check sick-leave balance, counting other requests still waiting for approval
+            $this->assertLeaveBalance($employeeId, $leaveDayCount);
         }
 
         if ($typeName === 'Overtime') {
@@ -136,6 +147,7 @@ final class RequestService
             if ($endTime <= $startTime && $dateTo === $dateFrom) {
                 throw new RuntimeException('Overtime end time must be after start time.');
             }
+            $this->assertNotInApprovedPayroll($employeeId, $this->dateRange($dateFrom, $dateTo), 'Overtime');
         }
 
         if ($typeName === 'CashAdvance') {
@@ -151,18 +163,30 @@ final class RequestService
         // --- Persist (header + detail in one transaction) --------------------
 
         return $this->connection->transaction(function (PDO $pdo) use (
-            $employeeId, $typeId, $typeName, $reason, $data, $actingUserId
+            $employeeId, $typeId, $typeName, $reason, $data, $actingUserId, $leaveDayCount
         ): int {
+            $hrRoleStmt = $pdo->prepare(
+                "SELECT COUNT(*)
+                   FROM users u
+                   JOIN role r ON r.role_id = u.role_id
+                  WHERE u.employee_id = :emp_id
+                    AND r.role_name = 'HRHead'
+                    AND u.status != 'Archived'"
+            );
+            $hrRoleStmt->execute([':emp_id' => $employeeId]);
+            $initialStatus = ((int) $hrRoleStmt->fetchColumn() > 0) ? 'HRApproved' : 'Pending';
+
             $stmt = $pdo->prepare(
                 "INSERT INTO request
                     (employee_id, request_type_id, reason, status, submitted_at, created_at, updated_at)
                  VALUES
-                    (:emp, :type, :reason, 'Pending', NOW(), NOW(), NOW())"
+                    (:emp, :type, :reason, :status, NOW(), NOW(), NOW())"
             );
             $stmt->execute([
                 ':emp'    => $employeeId,
                 ':type'   => $typeId,
                 ':reason' => $reason,
+                ':status' => $initialStatus,
             ]);
             $requestId = (int) $pdo->lastInsertId();
 
@@ -170,7 +194,7 @@ final class RequestService
             if ($typeName === 'Leave') {
                 $startDate     = $data['start_date'];
                 $endDate       = $data['end_date'];
-                $daysRequested = $this->calcLeaveDays($startDate, $endDate);
+                $daysRequested = $leaveDayCount;
 
                 $pdo->prepare(
                     "INSERT INTO leave_request_detail
@@ -246,7 +270,8 @@ final class RequestService
         if ((int) $row['employee_id'] !== $employeeId) {
             throw new RuntimeException('You may only cancel your own requests.');
         }
-        if (!in_array($row['status'], ['Pending', 'Returned'], true)) {
+        $isHrSelfDirectRequest = ($row['status'] === 'HRApproved' && empty($row['reviewed_by']));
+        if (!in_array($row['status'], ['Pending', 'Returned'], true) && !$isHrSelfDirectRequest) {
             throw new RuntimeException('Only Pending or Returned requests can be cancelled.');
         }
 
@@ -298,10 +323,12 @@ final class RequestService
             $params[':type_id'] = (int) $filters['type_id'];
         }
         if (!empty($filters['search'])) {
-            $where[]              = "(CONCAT(e.last_name,' ',e.first_name) LIKE :search_name
-                                   OR e.employee_number LIKE :search_num)";
-            $params[':search_name'] = '%' . $filters['search'] . '%';
-            $params[':search_num']  = '%' . $filters['search'] . '%';
+            // Every word in any order: first, middle, last name or number (REQ012).
+            [$nameSql, $nameParams] = \Wbpms\Infrastructure\Persistence\EmployeeNameSearch::condition((string) $filters['search'], 'e', 'search_q');
+            if ($nameSql !== '') {
+                $where[] = $nameSql;
+                $params  = array_merge($params, $nameParams);
+            }
         }
 
         $whereSql = 'WHERE ' . implode(' AND ', $where);
@@ -391,9 +418,21 @@ final class RequestService
     {
         $row = $this->findOrFail($requestId);
 
+        if ($actingUserId > 0) {
+            $empStmt = $this->connection->pdo()->prepare('SELECT employee_id FROM users WHERE user_id = :uid LIMIT 1');
+            $empStmt->execute([':uid' => $actingUserId]);
+            $actorEmpId = $empStmt->fetchColumn();
+            if ($actorEmpId !== false && $actorEmpId !== null && (int) $actorEmpId === (int) $row['employee_id']) {
+                throw new RuntimeException('You cannot pre-approve your own request. It must be reviewed by the Business Owner.');
+            }
+        }
+
         if (!in_array($row['status'], ['Pending', 'Returned'], true)) {
             throw new RuntimeException('Only Pending or Returned requests can be pre-approved by HR.');
         }
+
+        // Fail early with the same checks the Owner approval enforces.
+        $this->assertPayableRequest($row);
 
         $this->connection->transaction(function (PDO $pdo) use ($requestId, $actingUserId): void {
             $pdo->prepare(
@@ -447,15 +486,26 @@ final class RequestService
                   WHERE request_id = :id"
             )->execute([':owner' => $actingUserId, ':id' => $requestId]);
 
-            // REQ078: approved Leave → debit leave_ledger
+            // REQ078: approved Leave → debit leave_ledger for the working days payroll will pay.
+            // Re-counted here because days_requested on requests filed before
+            // 2026-11-22 counted rest days, and the schedule may have changed.
             if ($row['type_name'] === 'Leave') {
+                $chargeDays = $this->assertPayableRequest($row, $pdo);
+                if (abs($chargeDays - (float) $row['days_requested']) > 0.001) {
+                    $pdo->prepare(
+                        "UPDATE leave_request_detail SET days_requested = :days WHERE request_id = :rid"
+                    )->execute([':days' => number_format($chargeDays, 2, '.', ''), ':rid' => $requestId]);
+                }
                 $this->debitLeaveLedger(
                     $pdo,
                     (int) $row['employee_id'],
-                    (float) $row['days_requested'],
+                    $chargeDays,
                     $requestId,
                     $actingUserId
                 );
+            }
+            if ($row['type_name'] === 'Overtime') {
+                $this->assertPayableRequest($row, $pdo);
             }
 
             // REQ034: approved CashAdvance → create obligation in cash_advance_history
@@ -520,6 +570,8 @@ final class RequestService
                     COALESCE(ws.work_start_time, '07:00:00') AS work_start_time,
                     COALESCE(ws.work_end_time, '16:00:00') AS work_end_time,
                     COALESCE(ws.break_minutes, 60) AS break_minutes,
+                    CASE WHEN ws.schedule_id IS NULL THEN '12:00:00' ELSE ws.break_start_time END AS break_start_time,
+                    CASE WHEN ws.schedule_id IS NULL THEN '13:00:00' ELSE ws.break_end_time END AS break_end_time,
                     COALESCE(ws.standard_minutes, 480) AS standard_minutes,
                     COALESCE(ws.overtime_allowed, 0) AS overtime_allowed
                FROM attendance a
@@ -575,6 +627,8 @@ final class RequestService
             (int) $attendance['break_minutes'],
             (int) $attendance['standard_minutes'],
             $requests,
+            $attendance['break_start_time'] !== null ? (string) $attendance['break_start_time'] : null,
+            $attendance['break_end_time'] !== null ? (string) $attendance['break_end_time'] : null,
         );
         if ($overtime === (int) $attendance['overtime_minutes']) {
             return;
@@ -826,10 +880,12 @@ final class RequestService
             $params[':type_id'] = (int) $filters['type_id'];
         }
         if (!empty($filters['search'])) {
-            $where[]              = "(CONCAT(e.last_name,' ',e.first_name) LIKE :search_name
-                                   OR e.employee_number LIKE :search_num)";
-            $params[':search_name'] = '%' . $filters['search'] . '%';
-            $params[':search_num']  = '%' . $filters['search'] . '%';
+            // Every word in any order: first, middle, last name or number (REQ012).
+            [$nameSql, $nameParams] = \Wbpms\Infrastructure\Persistence\EmployeeNameSearch::condition((string) $filters['search'], 'e', 'search_q');
+            if ($nameSql !== '') {
+                $where[] = $nameSql;
+                $params  = array_merge($params, $nameParams);
+            }
         }
 
         $whereSql = 'WHERE ' . implode(' AND ', $where);
@@ -899,10 +955,12 @@ final class RequestService
             $params[':type_id'] = (int) $filters['type_id'];
         }
         if (!empty($filters['search'])) {
-            $where[]                = "(CONCAT(e.last_name,' ',e.first_name) LIKE :search_name
-                                      OR e.employee_number LIKE :search_num)";
-            $params[':search_name'] = '%' . $filters['search'] . '%';
-            $params[':search_num']  = '%' . $filters['search'] . '%';
+            // Every word in any order: first, middle, last name or number (REQ012).
+            [$nameSql, $nameParams] = \Wbpms\Infrastructure\Persistence\EmployeeNameSearch::condition((string) $filters['search'], 'e', 'search_q');
+            if ($nameSql !== '') {
+                $where[] = $nameSql;
+                $params  = array_merge($params, $nameParams);
+            }
         }
 
         $whereSql = 'WHERE ' . implode(' AND ', $where);
@@ -982,12 +1040,19 @@ final class RequestService
                     CONCAT(e.last_name, ', ', e.first_name) AS employee_name,
                     COALESCE(le.entitlement_id, 0)          AS entitlement_id,
                     COALESCE(le.entitled_days, 4.00)        AS entitled_days,
-                    COALESCE(
-                        (SELECT SUM(ll.days_delta)
-                           FROM leave_ledger ll
-                          WHERE ll.entitlement_id = le.entitlement_id),
-                        0
-                    ) AS balance
+                    -- No entitlement row yet means the 4-day grant has not been
+                    -- provisioned (ensureLeaveEntitlement runs on first view or
+                    -- request). Show the balance that grant will give, not 0,
+                    -- so the list does not change just because HR opened a row.
+                    CASE
+                        WHEN le.entitlement_id IS NULL THEN 4.00
+                        ELSE COALESCE(
+                            (SELECT SUM(ll.days_delta)
+                               FROM leave_ledger ll
+                              WHERE ll.entitlement_id = le.entitlement_id),
+                            0
+                        )
+                    END AS balance
                FROM employee e
                LEFT JOIN leave_entitlement le
                       ON le.employee_id = e.employee_id
@@ -1132,17 +1197,168 @@ final class RequestService
      */
     private function assertLeaveBalance(int $employeeId, float $daysRequested): void
     {
-        $year    = (int) date('Y');
-        $balance = $this->leaveBalance($employeeId, $year);
+        $year      = (int) date('Y');
+        $balance   = $this->leaveBalance($employeeId, $year);
+        $openDays  = $this->openLeaveDays($employeeId);
+        $available = $this->leaveDayCounter->availableCredit($balance, $openDays);
 
-        if ($balance < $daysRequested) {
-            $balFmt = number_format($balance, 2);
+        if ($available < $daysRequested) {
+            $balFmt = number_format(max(0.0, $available), 2);
             $reqFmt = number_format($daysRequested, 2);
+            $openNote = $openDays > 0
+                ? ' (' . number_format($openDays, 2) . ' day(s) are already in requests waiting for approval)'
+                : '';
             throw new RuntimeException(
-                "Insufficient sick-leave balance. You have {$balFmt} day(s) remaining "
-                . "but requested {$reqFmt} day(s)."
+                "Insufficient sick-leave balance. You have {$balFmt} day(s) remaining{$openNote} "
+                . "but requested {$reqFmt} working day(s)."
             );
         }
+    }
+
+    /**
+     * Sick-leave days in the employee's leave requests that are still waiting
+     * for a decision (not yet debited from the ledger).
+     */
+    private function openLeaveDays(int $employeeId, int $excludeRequestId = 0): float
+    {
+        $stmt = $this->connection->pdo()->prepare(
+            "SELECT COALESCE(SUM(lrd.days_requested), 0)
+               FROM request r
+               JOIN request_type rt ON rt.request_type_id = r.request_type_id
+               JOIN leave_request_detail lrd ON lrd.request_id = r.request_id
+              WHERE r.employee_id = :employee_id
+                AND rt.type_name = 'Leave'
+                AND r.status IN ('Pending', 'HRApproved', 'Returned')
+                AND r.request_id <> :exclude_id"
+        );
+        $stmt->execute([':employee_id' => $employeeId, ':exclude_id' => $excludeRequestId]);
+
+        return round((float) $stmt->fetchColumn(), 2);
+    }
+
+    /**
+     * Checks a Leave or Overtime request can still be paid: its dates are not
+     * in an Approved payroll run, and (Leave) the credit covers the working
+     * days. With $lockPdo (Owner approval, inside the transaction) the
+     * entitlement row is locked so two approvals cannot both spend the
+     * same credit.
+     *
+     * @param array<string,mixed> $row from findOrFail()
+     * @return float Leave days to charge (0 for other types).
+     */
+    private function assertPayableRequest(array $row, ?PDO $lockPdo = null): float
+    {
+        $employeeId = (int) $row['employee_id'];
+
+        if ($row['type_name'] === 'Overtime') {
+            $this->assertNotInApprovedPayroll(
+                $employeeId,
+                $this->dateRange((string) $row['date_from'], (string) $row['date_to']),
+                'Overtime',
+            );
+            return 0.0;
+        }
+        if ($row['type_name'] !== 'Leave') {
+            return 0.0;
+        }
+
+        $dates = $this->chargeableLeaveDates($employeeId, (string) $row['start_date'], (string) $row['end_date']);
+        $this->assertNotInApprovedPayroll($employeeId, $dates, 'Leave');
+        $days = (float) count($dates);
+
+        $year = (int) date('Y');
+        if ($lockPdo !== null) {
+            $entitlementId = $this->ensureLeaveEntitlement($lockPdo, $employeeId, $year);
+            $lockPdo->prepare('SELECT entitlement_id FROM leave_entitlement WHERE entitlement_id = :eid FOR UPDATE')
+                ->execute([':eid' => $entitlementId]);
+            $sum = $lockPdo->prepare('SELECT COALESCE(SUM(days_delta), 0) FROM leave_ledger WHERE entitlement_id = :eid');
+            $sum->execute([':eid' => $entitlementId]);
+            $balance = round((float) $sum->fetchColumn(), 2);
+        } else {
+            $balance = $this->leaveBalance($employeeId, $year);
+        }
+
+        if ($balance < $days) {
+            throw new RuntimeException(sprintf(
+                'Not enough sick-leave credit to approve this request: %s day(s) left, but it needs %s working day(s). '
+                . 'Return it so the employee can shorten the dates.',
+                number_format(max(0.0, $balance), 2),
+                number_format($days, 2),
+            ));
+        }
+
+        return $days;
+    }
+
+    /**
+     * The days of a leave range that payroll would pay (scheduled working
+     * days, not holidays), which are also the days charged to the credit.
+     *
+     * @return list<string>
+     */
+    private function chargeableLeaveDates(int $employeeId, string $startDate, string $endDate): array
+    {
+        $dates = $this->leaveDayCounter->chargeableDates(
+            $startDate,
+            $endDate,
+            $this->calendar->scheduledDates($employeeId, $startDate, $endDate),
+            $this->calendar->activeHolidayDates($startDate, $endDate),
+            $this->calendar->workedDates($employeeId, $startDate, $endDate),
+        );
+        if ($dates === []) {
+            throw new RuntimeException(
+                'The selected dates have no scheduled working days left to charge for this employee. '
+                . 'Rest days, holidays and days already worked are not charged to sick leave.'
+            );
+        }
+
+        return $dates;
+    }
+
+    /**
+     * @param list<string> $dates
+     * @throws RuntimeException when any date is already in an Approved payroll run.
+     */
+    private function assertNotInApprovedPayroll(int $employeeId, array $dates, string $label): void
+    {
+        if ($dates === []) {
+            return;
+        }
+        $covered = $this->calendar->datesInApprovedPayroll($employeeId, min($dates), max($dates));
+        $hits = array_values(array_filter($dates, static fn (string $d): bool => isset($covered[$d])));
+        if ($hits === []) {
+            return;
+        }
+
+        $labels = array_map(
+            static fn (string $d): string => (new \DateTimeImmutable($d))->format('m/d/y'),
+            $hits,
+        );
+        $runIds = array_values(array_unique(array_map(static fn (string $d): int => $covered[$d], $hits)));
+        throw new RuntimeException(sprintf(
+            '%s on %s can no longer be paid: %s already approved (payroll run #%s). '
+            . 'Use a Manual Payroll Adjustment in the next payroll run instead.',
+            $label,
+            implode(', ', $labels),
+            count($hits) === 1 ? 'that day is' : 'those days are',
+            implode(', #', $runIds),
+        ));
+    }
+
+    /** @return list<string> */
+    private function dateRange(string $from, string $to): array
+    {
+        $start = \DateTimeImmutable::createFromFormat('!Y-m-d', $from);
+        $end   = \DateTimeImmutable::createFromFormat('!Y-m-d', $to);
+        if ($start === false || $end === false || $end < $start) {
+            return [];
+        }
+        $dates = [];
+        for ($day = $start; $day <= $end; $day = $day->modify('+1 day')) {
+            $dates[] = $day->format('Y-m-d');
+        }
+
+        return $dates;
     }
 
     /**
@@ -1209,23 +1425,6 @@ final class RequestService
             ':delta' => number_format(-$days, 2, '.', ''),
             ':by'    => $actingUserId,
         ]);
-    }
-
-    /**
-     * Calculate leave days inclusive of start and end (1 day per calendar day).
-     * Fractional days are not supported in the current business rules.
-     */
-    private function calcLeaveDays(string $startDate, string $endDate): float
-    {
-        $start = \DateTimeImmutable::createFromFormat('Y-m-d', $startDate);
-        $end   = \DateTimeImmutable::createFromFormat('Y-m-d', $endDate);
-
-        if ($start === false || $end === false) {
-            return 0.0;
-        }
-
-        $diff = $start->diff($end);
-        return (float) ($diff->days + 1); // inclusive
     }
 
     /**

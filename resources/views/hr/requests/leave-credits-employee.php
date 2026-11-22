@@ -28,7 +28,7 @@ $errors   ??= [];
             <?= Formatter::escape($employee['employee_number'] ?? '') ?> &nbsp;·&nbsp; <?= $year ?> sick leave
         </p>
     </div>
-    <a href="<?= $base ?>/hr/requests/leave-credits?year=<?= $year ?>" class="btn btn-secondary">← Back to All Employees</a>
+    <a href="<?= $base ?>/hr/requests/leave-credits?year=<?= $year ?>" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to All Employees</a>
 </div>
 
 <?php if ($errors !== []): ?>
@@ -92,7 +92,7 @@ $errors   ??= [];
                 <tr>
                     <td>
                         <span style="background:<?= $typeColor ?>;color:#fff;padding:1px 7px;border-radius:9999px;font-size:.72rem">
-                            <?= Formatter::escape($entry['entry_type']) ?>
+                            <?= Formatter::escape(Formatter::label($entry['entry_type'])) ?>
                         </span>
                     </td>
                     <td style="text-align:right;font-weight:600;color:<?= $isCredit ? '#059669' : '#dc2626' ?>">
@@ -161,7 +161,7 @@ $errors   ??= [];
             </div>
 
             <button type="submit" class="btn btn-primary" style="width:100%"
-                    onclick="return confirm('Apply this leave credit adjustment?')">
+                    data-confirm="Apply this leave credit adjustment?">
                 Apply Adjustment
             </button>
         </form>

@@ -36,7 +36,7 @@
         <option value="Archived"<?= ($filters['status'] ?? '') === 'Archived' ? ' selected' : '' ?>>Archived</option>
         <option value=""<?= ($filters['status'] ?? 'Active') === '' ? ' selected' : '' ?>>All</option>
     </select>
-    <button type="submit" class="btn btn-primary">Filter</button>
+    <button type="submit" class="btn btn-primary">Apply Filters</button>
     <a href="<?= $base ?>/hr/salary" class="btn btn-secondary">Clear</a>
 </form>
 
@@ -65,8 +65,8 @@
                 </td>
                 <td><?= htmlspecialchars((string)($r['branch_name'] ?? '—')) ?></td>
                 <td>₱<?= number_format((float)$r['daily_rate'], 2) ?></td>
-                <td><?= htmlspecialchars((string)$r['effective_from']) ?></td>
-                <td><?= $r['effective_to'] ? htmlspecialchars($r['effective_to']) : '—' ?></td>
+                <td><?= \Wbpms\Http\View\Formatter::date((string) $r['effective_from']) ?></td>
+                <td><?= \Wbpms\Http\View\Formatter::date($r['effective_to'] ?: null) ?></td>
                 <td>
                     <?php
                     $c = ['Active'=>'#10b981','Superseded'=>'#f59e0b','Archived'=>'#6b7280'][$r['status']] ?? '#6b7280';
@@ -78,7 +78,7 @@
                     <a href="<?= $base ?>/hr/salary/<?= (int)$r['salary_id'] ?>/edit" class="btn btn-sm btn-secondary">Update Rate</a>
                     <form method="post" action="<?= $base ?>/hr/salary/<?= (int)$r['salary_id'] ?>/archive" style="display:inline">
                         <input type="hidden" name="_csrf" value="<?= htmlspecialchars($csrf) ?>">
-                        <button type="submit" class="btn btn-sm btn-secondary" onclick="return confirm('Archive this salary record?')">Archive</button>
+                        <button type="submit" class="btn btn-sm btn-secondary" data-confirm="Archive this salary record?">Archive</button>
                     </form>
                     <?php endif; ?>
                 </td>

@@ -104,7 +104,7 @@ class EmployeeRosterSeeder extends AbstractSeed
                     'employee_number'   => $row['employee_number'],
                     'employee_type'     => $row['employee_type'],
                     'first_name'        => $row['first_name'],
-                    'middle_initial'    => $row['middle_name'] !== '' ? mb_substr($row['middle_name'], 0, 5) : null,
+                    'middle_initial'    => $row['middle_name'] !== '' ? mb_substr($row['middle_name'], 0, 50) : null,
                     'last_name'         => $row['last_name'],
                     'email'             => $row['email'],
                     'contact_number'    => $row['contact_number'],
@@ -255,14 +255,15 @@ class EmployeeRosterSeeder extends AbstractSeed
         if ($r['position'] === '' || mb_strlen($r['position']) > 100) {
             $e[] = 'position missing';
         }
-        if (!in_array($r['employee_type'], ['Regular', 'Contractual'], true)) {
-            $e[] = 'employee_type must be Regular or Contractual';
+        if (!in_array($r['employee_type'], ['Regular', 'Probationary', 'Contractual'], true)) {
+            $e[] = 'employee_type must be Regular, Probationary, or Contractual';
         }
         if (!in_array($r['role'], ['Employee', 'HRHead'], true)) {
             $e[] = 'role must be Employee or HRHead';
         }
-        if (!is_numeric($r['daily_rate']) || (float) $r['daily_rate'] <= 0 || (float) $r['daily_rate'] > 999999.99) {
-            $e[] = 'daily_rate missing or invalid';
+        $minWage = $repo->activeMinimumDailyWage();
+        if (!is_numeric($r['daily_rate']) || (float) $r['daily_rate'] < $minWage || (float) $r['daily_rate'] > 999999.99) {
+            $e[] = sprintf('daily_rate missing or below minimum daily wage (%.2f)', $minWage);
         }
         if (!$this->isIsoDate($r['effective_from'])) {
             $e[] = 'effective_from missing or invalid';

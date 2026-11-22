@@ -56,8 +56,8 @@ $statusColor = static function (string $status): string {
                 <tr>
                     <th>Employee</th>
                     <th>Date</th>
-                    <th>Time in</th>
-                    <th>Time out</th>
+                    <th>Time In</th>
+                    <th>Time Out</th>
                     <th class="number">Worked</th>
                     <th class="number">Late</th>
                     <th class="number">Undertime</th>

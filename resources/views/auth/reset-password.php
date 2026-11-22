@@ -1,17 +1,24 @@
 <?php
 /**
- * Reset Password — new-password entry form.
+ * Reset Password — enter the emailed 6-digit code and the new password.
  *
- * Shown when the user follows a valid reset link from their email.
+ * Reached from the Forgot Password form; the email is kept in the session.
+ * The wording never says whether the email has an account.
  *
  * Variables injected by AuthController::showResetPassword():
- *   string      $csrfField  — rendered hidden CSRF input
- *   string      $token      — raw reset token (passed through the form as a hidden field)
- *   string|null $error      — validation or token error from previous submission
+ *   string      $csrfField    — rendered hidden CSRF input
+ *   string      $maskedEmail  — e.g. "al***@gmail.com"
+ *   int         $resendWait   — seconds before "Send a new code" is allowed
+ *   string|null $error        — error from the previous submission
+ *   string|null $notice       — info message (new code sent)
  *
- * REQ002: forgot-password email-based reset-link flow.
+ * REQ002: forgot password — a 6-digit code is emailed (replaced the reset link 2026-11-21).
  */
-$base = rtrim((string) ($_ENV['APP_BASE_URL'] ?? ''), '/');
+use Wbpms\Domain\Auth\PasswordResetCodePolicy;
+
+$base    = rtrim((string) ($_ENV['APP_BASE_URL'] ?? ''), '/');
+$e       = static fn (string $v): string => htmlspecialchars($v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+$minutes = intdiv(PasswordResetCodePolicy::TTL_SECONDS, 60);
 ?>
 <!doctype html>
 <html lang="en">
@@ -36,18 +43,33 @@ $base = rtrim((string) ($_ENV['APP_BASE_URL'] ?? ''), '/');
 
     <h1>Reset Password</h1>
     <p class="login-sub">
-        Enter and confirm your new password below.
+        If an account uses <strong><?= $e((string) $maskedEmail) ?></strong>, we emailed it a
+        6-digit code. Enter the code and your new password below.<br>
+        The code expires in <?= $minutes ?> minutes.
     </p>
 
+    <?php if (!empty($notice)): ?>
+        <div class="alert success" role="status"><?= $e((string) $notice) ?></div>
+    <?php endif; ?>
     <?php if (!empty($error)): ?>
-        <div class="alert error" role="alert">
-            <?= htmlspecialchars((string) $error, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>
-        </div>
+        <div class="alert error" role="alert"><?= $e((string) $error) ?></div>
     <?php endif; ?>
 
     <form method="POST" action="<?= $base ?>/reset-password" novalidate autocomplete="off">
         <?= $csrfField ?>
-        <input type="hidden" name="token" value="<?= htmlspecialchars((string) $token, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>">
+
+        <label for="code">Reset Code <span aria-hidden="true" style="color:#dc2626">*</span></label>
+        <input type="text"
+               id="code"
+               name="code"
+               required
+               autofocus
+               inputmode="numeric"
+               pattern="[0-9]{6}"
+               maxlength="7"
+               autocomplete="one-time-code"
+               placeholder="6-digit code"
+               style="letter-spacing:.35em;font-size:1.25rem;text-align:center">
 
         <label for="password">New Password <span aria-hidden="true" style="color:#dc2626">*</span></label>
         <div class="login-pwd-wrap">
@@ -56,7 +78,6 @@ $base = rtrim((string) ($_ENV['APP_BASE_URL'] ?? ''), '/');
                    name="password"
                    required
                    minlength="8"
-                   autofocus
                    autocomplete="new-password"
                    placeholder="Minimum 8 characters">
             <button type="button"
@@ -101,7 +122,23 @@ $base = rtrim((string) ($_ENV['APP_BASE_URL'] ?? ''), '/');
         </button>
     </form>
 
-    <p class="login-footer" style="margin-top:1rem">
+    <form method="POST" action="<?= $base ?>/forgot-password/resend" style="margin-top:.75rem;text-align:center">
+        <?= $csrfField ?>
+        <button type="submit"
+                id="resend-btn"
+                class="btn btn-full"
+                data-wait="<?= (int) $resendWait ?>"
+                <?= $resendWait > 0 ? 'disabled' : '' ?>>
+            Send a new code<?= $resendWait > 0 ? ' (' . (int) $resendWait . 's)' : '' ?>
+        </button>
+    </form>
+
+    <p class="login-footer" style="margin-top:1rem;color:#6b7280;font-size:.8rem">
+        Didn't get it? Check your Spam folder, or
+        <a href="<?= $base ?>/forgot-password" style="color:#4b5563">use a different email</a>.
+    </p>
+
+    <p class="login-footer" style="margin-top:.5rem">
         <a href="<?= $base ?>/login" style="color:#4b5563;text-decoration:none;font-size:.875rem">
             &larr; Back to Login
         </a>
@@ -121,6 +158,23 @@ function toggleField(inputId, iconId) {
     icon.innerHTML = show ? SVG_EYE_OFF : SVG_EYE;
     icon.closest('button').setAttribute('aria-label', show ? 'Hide password' : 'Show password');
 }
+
+(function () {
+    var btn = document.getElementById('resend-btn');
+    if (!btn) { return; }
+    var left = parseInt(btn.getAttribute('data-wait') || '0', 10);
+    if (left <= 0) { return; }
+    var timer = setInterval(function () {
+        left -= 1;
+        if (left <= 0) {
+            clearInterval(timer);
+            btn.disabled = false;
+            btn.textContent = 'Send a new code';
+            return;
+        }
+        btn.textContent = 'Send a new code (' + left + 's)';
+    }, 1000);
+})();
 </script>
 
 </body>

@@ -39,7 +39,7 @@ $statusBadge = static function (string $s): string {
 
 <div class="card" style="padding:0;overflow:hidden">
     <?php if ($runs === []): ?>
-    <p style="padding:2rem;text-align:center;color:#6b7280">No payroll runs yet. <a href="<?= $base ?>/hr/payroll/create">Create one →</a></p>
+    <p style="padding:2rem;text-align:center;color:#6b7280">No payroll runs yet. <a href="<?= $base ?>/hr/payroll/create">Create one <?= \Wbpms\Http\View\Icon::svg('chevron-right') ?></a></p>
     <?php else: ?>
     <table class="data-table">
         <thead>
@@ -58,7 +58,7 @@ $statusBadge = static function (string $s): string {
         <?php foreach ($runs as $r): ?>
         <tr>
             <td><?= htmlspecialchars($r['branch_name']) ?></td>
-            <td><?= htmlspecialchars($r['period_start'].' – '.$r['period_end']) ?></td>
+            <td><?= \Wbpms\Http\View\Formatter::date($r['period_start']) ?> – <?= \Wbpms\Http\View\Formatter::date($r['period_end']) ?></td>
             <td style="text-align:center"><?= (int)$r['employee_count'] ?></td>
             <td style="text-align:right">₱<?= number_format((float)$r['gross_total'], 2) ?></td>
             <td style="text-align:right">₱<?= number_format((float)$r['net_total'], 2) ?></td>

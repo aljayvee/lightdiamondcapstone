@@ -25,7 +25,7 @@ $forwardNote = 'Payroll disbursement package for ' . (string) ($run['period_labe
             <a class="btn btn-secondary" href="<?= $base ?><?= Formatter::escape($backPath) ?>"><?= Formatter::escape($backLabel) ?></a>
             <?php if ($isReady): ?>
             <button type="button" class="btn btn-secondary" onclick="copyForwardingNote()">Copy Forwarding Note</button>
-            <a class="btn btn-secondary" href="<?= $base ?>/payroll/<?= (int) ($run['payroll_run_id'] ?? 0) ?>/disbursement-summary/export">⬇ Export CSV</a>
+            <a class="btn btn-secondary" href="<?= $base ?>/payroll/<?= (int) ($run['payroll_run_id'] ?? 0) ?>/disbursement-summary/export"><?= \Wbpms\Http\View\Icon::svg('sheet') ?> Export CSV</a>
             <button type="button" class="btn btn-primary" onclick="window.print()">Print Package</button>
             <?php endif; ?>
         </div>
@@ -35,7 +35,7 @@ $forwardNote = 'Payroll disbursement package for ' . (string) ($run['period_labe
     <section class="disbursement-blocked">
         <h2>Not ready for disbursement</h2>
         <p>Every non-cancelled branch payroll run in this cut-off must be approved before the BDO preparation list and aggregate cheque amount can be produced.</p>
-        <table><thead><tr><th>Branch</th><th>Payroll status</th><th class="number">Employees</th><th class="number">Net pay</th></tr></thead><tbody>
+        <table><thead><tr><th>Branch</th><th>Payroll Status</th><th class="number">Employees</th><th class="number">Net Pay</th></tr></thead><tbody>
         <?php foreach ($branchRuns as $branchRun): ?><tr><td><?= Formatter::escape((string) $branchRun['branch_name']) ?></td><td><?= Formatter::escape((string) $branchRun['status']) ?></td><td class="number"><?= (int) $branchRun['employee_count'] ?></td><td class="number">₱<?= number_format((float) $branchRun['net_total'], 2) ?></td></tr><?php endforeach; ?>
         </tbody></table>
     </section>
@@ -59,7 +59,7 @@ $forwardNote = 'Payroll disbursement package for ' . (string) ($run['period_labe
 
     <section class="disbursement-card">
         <h2>Approved branch payroll summary</h2>
-        <table><thead><tr><th>Branch</th><th class="number">Employees</th><th class="number">Gross pay</th><th class="number">Deductions</th><th class="number">Net pay</th></tr></thead><tbody>
+        <table><thead><tr><th>Branch</th><th class="number">Employees</th><th class="number">Gross Pay</th><th class="number">Deductions</th><th class="number">Net Pay</th></tr></thead><tbody>
         <?php foreach ($branchRuns as $branchRun): ?><tr><td><?= Formatter::escape((string) $branchRun['branch_name']) ?></td><td class="number"><?= (int) $branchRun['employee_count'] ?></td><td class="number">₱<?= number_format((float) $branchRun['gross_total'], 2) ?></td><td class="number">₱<?= number_format((float) $branchRun['deductions_total'], 2) ?></td><td class="number">₱<?= number_format((float) $branchRun['net_total'], 2) ?></td></tr><?php endforeach; ?>
         </tbody></table>
     </section>
@@ -67,7 +67,7 @@ $forwardNote = 'Payroll disbursement package for ' . (string) ($run['period_labe
     <section class="disbursement-card">
         <h2>Manual BDO deposit-slip preparation list</h2>
         <p>Prepare one deposit slip for each employee using the exact net-pay amount below.</p>
-        <div class="disbursement-table-wrap"><table><thead><tr><th>#</th><th>Branch</th><th>Employee</th><th>BDO account name</th><th>BDO account number</th><th class="number">Exact net pay</th></tr></thead><tbody>
+        <div class="disbursement-table-wrap"><table><thead><tr><th>#</th><th>Branch</th><th>Employee</th><th>BDO Account Name</th><th>BDO Account Number</th><th class="number">Exact Net Pay</th></tr></thead><tbody>
         <?php foreach ($entries as $index => $entry): ?><tr><td><?= $index + 1 ?></td><td><?= Formatter::escape((string) $entry['branch_name']) ?></td><td><strong><?= Formatter::escape((string) $entry['employee_name']) ?></strong><small><?= Formatter::escape((string) $entry['employee_number']) ?></small></td><td><?= Formatter::escape((string) ($entry['account_name'] ?? '—')) ?></td><td class="account"><?= empty($entry['account_number']) ? '<span class="missing">MISSING</span>' : Formatter::escape((string) $entry['account_number']) ?></td><td class="number net">₱<?= number_format((float) $entry['net_pay'], 2) ?></td></tr><?php endforeach; ?>
         </tbody><tfoot><tr><td colspan="5">Aggregate cheque amount</td><td class="number">₱<?= number_format((float) $summary['cheque_total'], 2) ?></td></tr></tfoot></table></div>
     </section>

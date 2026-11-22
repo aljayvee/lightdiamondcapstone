@@ -33,12 +33,12 @@ $pendingRequests    ??= 0;
     <div class="stat-card">
         <div class="stat-label">Payroll Pending Approval</div>
         <div class="stat-value" style="<?= $pendingApprovals > 0 ? 'color:#b45309' : '' ?>"><?= $pendingApprovals ?></div>
-        <div class="stat-sub"><a href="<?= $base ?>/owner/payroll">Review payroll →</a></div>
+        <div class="stat-sub"><a href="<?= $base ?>/owner/payroll">Review payroll <?= \Wbpms\Http\View\Icon::svg('chevron-right') ?></a></div>
     </div>
     <div class="stat-card" style="border-left:4px solid #6366f1">
         <div class="stat-label">Requests Awaiting Approval</div>
         <div class="stat-value" style="<?= $pendingRequests > 0 ? 'color:#4338ca' : '' ?>"><?= $pendingRequests ?></div>
-        <div class="stat-sub"><a href="<?= $base ?>/owner/requests">Review requests →</a></div>
+        <div class="stat-sub"><a href="<?= $base ?>/owner/requests">Review requests <?= \Wbpms\Http\View\Icon::svg('chevron-right') ?></a></div>
     </div>
     <div class="stat-card">
         <div class="stat-label">Approved This Period</div>
@@ -112,8 +112,8 @@ $pendingRequests    ??= 0;
         <tr>
             <td><?= Formatter::escape($run['branch_name']) ?></td>
             <td><?= Formatter::escape($run['period']) ?></td>
-            <td>₱<?= Formatter::escape($run['gross_total']) ?></td>
-            <td>₱<?= Formatter::escape($run['net_total']) ?></td>
+            <td>₱<?= number_format((float) $run['gross_total'], 2) ?></td>
+            <td>₱<?= number_format((float) $run['net_total'], 2) ?></td>
             <td><?= Formatter::date($run['approved_at']) ?></td>
         </tr>
         <?php endforeach; ?>

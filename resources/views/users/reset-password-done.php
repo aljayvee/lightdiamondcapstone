@@ -78,7 +78,7 @@ use Wbpms\Http\View\Formatter;
         recovered after leaving this page.
     </div>
 
-    <a href="<?= $base ?>/users" class="btn btn-secondary">← Back to User List</a>
+    <a href="<?= $base ?>/users" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to User List</a>
 
 </div>
 

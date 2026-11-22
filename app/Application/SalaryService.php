@@ -27,7 +27,30 @@ use Wbpms\Infrastructure\Database\Connection;
  */
 final class SalaryService
 {
+    /** Same ceiling as Add/Edit Employee (EmployeeController::MAX_DAILY_RATE). */
+    public const MAX_DAILY_RATE = 1000000.00;
+
     public function __construct(private Connection $connection) {}
+
+    /**
+     * Start date of each employee's active salary, so the form can show the
+     * earliest date a new rate may start (REQ062/063).
+     *
+     * @return array<int, string> employee_id => YYYY-MM-DD
+     */
+    public function activeStartDates(): array
+    {
+        $rows = $this->connection->pdo()->query(
+            "SELECT employee_id, MAX(effective_from) AS effective_from
+               FROM salary WHERE status = 'Active' GROUP BY employee_id"
+        )->fetchAll(PDO::FETCH_ASSOC);
+        $out = [];
+        foreach ($rows as $row) {
+            $out[(int) $row['employee_id']] = (string) $row['effective_from'];
+        }
+
+        return $out;
+    }
 
     // -----------------------------------------------------------------------
     // REQ053 — List
@@ -47,9 +70,12 @@ final class SalaryService
         $params = [];
 
         if (!empty($filters['search'])) {
-            $where[]           = "(CONCAT(e.last_name,' ',e.first_name) LIKE :search
-                                   OR e.employee_number LIKE :search)";
-            $params[':search'] = '%' . $filters['search'] . '%';
+            // Every word in any order: first, middle, last name or number (REQ012).
+            [$nameSql, $nameParams] = \Wbpms\Infrastructure\Persistence\EmployeeNameSearch::condition((string) $filters['search'], 'e', 'search_q');
+            if ($nameSql !== '') {
+                $where[] = $nameSql;
+                $params  = array_merge($params, $nameParams);
+            }
         }
         if (!empty($filters['branch_id'])) {
             $where[]              = 'eba.branch_id = :branch_id';
@@ -166,11 +192,9 @@ final class SalaryService
         // closed's own effective_from, otherwise DATE_SUB(effective_from, 1 day)
         // would produce effective_to <= effective_from and violate chk_salary_period.
         if ($effectiveFrom <= (string) $existing['effective_from']) {
-            throw new RuntimeException(
-                'Effective date must be after this record\'s start date ('
-                . (string) $existing['effective_from'] . '). '
-                . 'Choose a later date to preserve the salary period integrity.'
-            );
+            throw new RuntimeException(\Wbpms\Domain\Employee\EffectiveDateRule::message(
+                'effective date', 'current salary', (string) $existing['effective_from']
+            ));
         }
 
         return $this->connection->transaction(function (PDO $pdo) use (
@@ -307,6 +331,27 @@ final class SalaryService
     // Private helpers
     // -----------------------------------------------------------------------
 
+    public function activeMinimumDailyWage(float $fallback = 0.0): float
+    {
+        try {
+            $stmt = $this->connection->pdo()->query(
+                "SELECT minimum_daily_wage
+                   FROM payroll_policy_version
+                  WHERE status = 'Approved'
+                  ORDER BY effective_from DESC
+                  LIMIT 1"
+            );
+            $val = $stmt !== false ? $stmt->fetchColumn() : false;
+            if ($val !== false && (float) $val > 0) {
+                return (float) $val;
+            }
+        } catch (\Throwable) {
+            // Ignore when running on minimal schema
+        }
+
+        return $fallback;
+    }
+
     private function validateInput(int $employeeId, string $dailyRate, string $effectiveFrom): void
     {
         if ($employeeId <= 0) {
@@ -315,8 +360,24 @@ final class SalaryService
         if ($dailyRate === '' || !is_numeric($dailyRate) || (float) $dailyRate <= 0) {
             throw new RuntimeException('Daily rate must be a positive number.');
         }
-        if ($effectiveFrom === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $effectiveFrom)) {
-            throw new RuntimeException('Effective date is required (YYYY-MM-DD).');
+        if ((float) $dailyRate > self::MAX_DAILY_RATE) {
+            throw new RuntimeException(sprintf('Daily rate cannot exceed ₱%s.', number_format(self::MAX_DAILY_RATE, 2)));
+        }
+        if (preg_match('/^\d+(\.\d{1,2})?$/', $dailyRate) !== 1) {
+            throw new RuntimeException('Daily rate can have at most 2 decimal places, e.g. 610.50.');
+        }
+        $minWage = $this->activeMinimumDailyWage(0.0);
+        if ($minWage > 0.0 && (float) $dailyRate < $minWage) {
+            throw new RuntimeException(sprintf(
+                'Daily rate cannot be below the active DOLE minimum daily wage (₱%s).',
+                number_format($minWage, 2),
+            ));
+        }
+        if ($effectiveFrom === '') {
+            throw new RuntimeException('Effective date is required.');
+        }
+        if (!\Wbpms\Domain\Validation\FieldRules::isIsoDate($effectiveFrom)) {
+            throw new RuntimeException('Effective date must be a real calendar date.');
         }
 
         // Guard against chk_salary_period constraint violation:
@@ -336,11 +397,9 @@ final class SalaryService
         $existing = $stmt->fetch(\PDO::FETCH_ASSOC);
 
         if ($existing !== false && $effectiveFrom <= (string) $existing['effective_from']) {
-            throw new RuntimeException(
-                'Effective date must be after the current active record\'s start date ('
-                . (string) $existing['effective_from'] . '). '
-                . 'Choose a later date to preserve the salary period integrity.'
-            );
+            throw new RuntimeException(\Wbpms\Domain\Employee\EffectiveDateRule::message(
+                'effective date', 'current salary', (string) $existing['effective_from']
+            ));
         }
     }
 

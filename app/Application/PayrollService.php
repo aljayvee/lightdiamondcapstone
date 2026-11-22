@@ -11,8 +11,14 @@ use RuntimeException;
 use Wbpms\Domain\Payroll\HolidayPayCalculator;
 use Wbpms\Domain\Payroll\HolidayRecord;
 use Wbpms\Domain\Payroll\HolidayType;
+use Wbpms\Domain\Payroll\PayrollPeriodClosure;
+use Wbpms\Domain\Payroll\PayrollReadinessEvaluator;
 use Wbpms\Domain\Payroll\ApprovedOvertimeCalculator;
+use Wbpms\Domain\Payroll\SssContributionSchedule;
+use Wbpms\Domain\Payroll\WithholdingTaxCalculator;
+use Wbpms\Http\View\Formatter;
 use Wbpms\Infrastructure\Database\Connection;
+use Wbpms\Infrastructure\Persistence\WorkCalendarRepository;
 
 /**
  * PayrollService — orchestrates the full payroll lifecycle.
@@ -43,12 +49,14 @@ final class PayrollService
     private Connection $connection;
     private HolidayPayCalculator $holidayCalc;
     private ApprovedOvertimeCalculator $approvedOvertimeCalc;
+    private WithholdingTaxCalculator $taxCalc;
 
     public function __construct(Connection $connection)
     {
         $this->connection  = $connection;
         $this->holidayCalc = new HolidayPayCalculator();
         $this->approvedOvertimeCalc = new ApprovedOvertimeCalculator();
+        $this->taxCalc     = new WithholdingTaxCalculator();
     }
 
     // ===================================================================
@@ -257,7 +265,7 @@ final class PayrollService
                     pr.net_pay,
                     pr.total_deductions,
                     b.branch_name,
-                    CONCAT(pp.period_start, ' – ', pp.period_end) AS period_label,
+                    CONCAT(DATE_FORMAT(pp.period_start, '%m/%d/%y'), ' – ', DATE_FORMAT(pp.period_end, '%m/%d/%y')) AS period_label,
                     pp.period_start,
                     pp.period_end,
                     pp.pay_date
@@ -452,49 +460,15 @@ final class PayrollService
         $philRate     = $this->loadPhilhealthRate($pdo, (int) $contribPolicy['contribution_policy_id']);
         $pagibigRate  = $this->loadPagibigRate($pdo, (int) $contribPolicy['contribution_policy_id']);
 
-        $lateRatePerMin   = (float) ($policy['late_rate_per_minute'] ?? 1.00);
-        $eemrDaysPerYear  = (int)   ($policy['eemr_days_per_year']   ?? 313);
-        $periodStart      = $run['period_start'];
-        $periodEnd        = $run['period_end'];
-        $payDate          = $run['pay_date'];
+        $lateRatePerMin     = (float) ($policy['late_rate_per_minute'] ?? 1.00);
+        $eemrDaysPerYear    = (int)   ($policy['eemr_days_per_year']   ?? 313);
+        $annualTaxThreshold = (float) ($policy['annual_tax_threshold'] ?? 250000.00);
+        $periodStart        = $run['period_start'];
+        $periodEnd          = $run['period_end'];
+        $payDate            = $run['pay_date'];
         $applyContributions = $this->isMonthlyContributionCutoff((string) $payDate);
 
-        // Eligible employees: branch assignment effective on period_start
-        // Note: PDO named params must be unique per statement — :ps1…:ps6 all bind $periodStart.
-        $stmt = $pdo->prepare(
-            "SELECT e.employee_id, e.employee_number,
-                    eba.branch_assignment_id,
-                    s.salary_id, s.daily_rate,
-                    ws.standard_minutes
-               FROM employee_branch_assignment eba
-               JOIN employee e ON e.employee_id = eba.employee_id
-               JOIN salary s
-                 ON s.employee_id   = e.employee_id
-                AND s.effective_from <= :ps1
-                AND (s.effective_to IS NULL OR s.effective_to > :ps2)
-                AND s.status = 'Active'
-               LEFT JOIN employee_schedule_assignment esa
-                 ON esa.employee_id = e.employee_id
-                AND esa.effective_from <= :ps3
-                AND (esa.effective_to IS NULL OR esa.effective_to > :ps4)
-                AND esa.status = 'Active'
-               LEFT JOIN work_schedule ws
-                 ON ws.schedule_id = esa.schedule_id
-              WHERE eba.branch_id     = (SELECT branch_id FROM payroll_run WHERE payroll_run_id = :run_id)
-                AND eba.effective_from <= :ps5
-                AND (eba.effective_to IS NULL OR eba.effective_to > :ps6)
-                AND e.status = 'Active'"
-        );
-        $stmt->execute([
-            ':ps1'    => $periodStart,
-            ':ps2'    => $periodStart,
-            ':ps3'    => $periodStart,
-            ':ps4'    => $periodStart,
-            ':ps5'    => $periodStart,
-            ':ps6'    => $periodStart,
-            ':run_id' => $runId,
-        ]);
-        $employees = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $employees = $this->eligibleEmployees($pdo, $runId, (string) $periodStart, (string) $periodEnd);
 
         $this->assertEmployeesAreNotAlreadyPaidInAnotherRun(
             $pdo,
@@ -506,7 +480,7 @@ final class PayrollService
         $this->connection->transaction(function () use (
             $pdo, $runId, $employees, $periodStart, $periodEnd,
             $contribPolicy, $sssBrackets, $philRate, $pagibigRate,
-            $lateRatePerMin, $eemrDaysPerYear, $computedByUserId,
+            $lateRatePerMin, $eemrDaysPerYear, $annualTaxThreshold, $computedByUserId,
             $payDate, $applyContributions
         ): void {
             // Lock and re-check after the pre-computation reads. This prevents
@@ -522,6 +496,7 @@ final class PayrollService
             }
 
             // Clear prior rows for this run
+            $pdo->prepare("DELETE FROM cash_advance_repayment WHERE payroll_id IN (SELECT payroll_id FROM payroll WHERE payroll_run_id = :id)")->execute([':id' => $runId]);
             $pdo->prepare("DELETE FROM contribution_record WHERE payroll_id IN (SELECT payroll_id FROM payroll WHERE payroll_run_id = :id)")->execute([':id' => $runId]);
             $pdo->prepare("DELETE FROM deduction WHERE payroll_id IN (SELECT payroll_id FROM payroll WHERE payroll_run_id = :id)")->execute([':id' => $runId]);
             $pdo->prepare("DELETE FROM payroll_earnings WHERE payroll_id IN (SELECT payroll_id FROM payroll WHERE payroll_run_id = :id)")->execute([':id' => $runId]);
@@ -538,56 +513,83 @@ final class PayrollService
                 $salaryId        = (int) $emp['salary_id'];
                 $dailyRate       = (float) $emp['daily_rate'];
                 $standardMinutes = (int) ($emp['standard_minutes'] ?? 480); // 8h default
+                [$empStart, $empEnd] = $this->employeeWindow($emp, (string) $periodStart, (string) $periodEnd);
 
-                // --- Attendance summary for period ---
+                // --- Attendance summary for employee's active window in period ---
                 $stmt = $pdo->prepare(
-                    "SELECT a.attendance_date, a.late_minutes, a.undertime_minutes
+                    "SELECT a.attendance_date, a.late_minutes, a.undertime_minutes,
+                            ws.standard_minutes AS row_standard_minutes
                        FROM attendance a
                        LEFT JOIN attendance_import_batch aib ON aib.import_batch_id = a.import_batch_id
+                       LEFT JOIN work_schedule ws ON ws.schedule_id = a.schedule_id
                       WHERE a.employee_id = :emp_id
-                        AND attendance_date BETWEEN :start AND :end
+                        AND a.attendance_date BETWEEN :start AND :end
                         AND a.status IN ('Complete','Approved')
                         AND (a.import_batch_id IS NULL OR aib.status IN ('Approved','Completed'))"
                 );
-                $stmt->execute([':emp_id' => $employeeId, ':start' => $periodStart, ':end' => $periodEnd]);
+                $stmt->execute([':emp_id' => $employeeId, ':start' => $empStart, ':end' => $empEnd]);
                 $attendanceRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 $daysCount = count($attendanceRows);
                 $totalLate = array_sum(array_map(static fn (array $row): int => (int) $row['late_minutes'], $attendanceRows));
                 $totalUndertime = array_sum(array_map(static fn (array $row): int => (int) $row['undertime_minutes'], $attendanceRows));
+                $undertimeDedRaw = 0.0;
+                $standardMinutesByDate = [];
+                foreach ($attendanceRows as $row) {
+                    $rowStd = (int) ($row['row_standard_minutes'] ?? $standardMinutes);
+                    if ($rowStd <= 0) {
+                        $rowStd = $standardMinutes > 0 ? $standardMinutes : 480;
+                    }
+                    $standardMinutesByDate[(string) $row['attendance_date']] = $rowStd;
+                    $rowUt = (int) $row['undertime_minutes'];
+                    if ($rowUt > 0) {
+                        $undertimeDedRaw += $rowUt * ($dailyRate / $rowStd);
+                    }
+                }
                 $attendanceDates = array_fill_keys(
                     array_map(static fn (array $row): string => (string) $row['attendance_date'], $attendanceRows),
                     true,
                 );
+                $scheduledDates = $this->scheduledDatesForPeriod($pdo, $employeeId, $empStart, $empEnd);
                 $attendancePolicy = $this->attendancePolicyForPeriod(
-                    $pdo, $employeeId, $periodStart, $periodEnd, $attendanceDates
+                    $pdo, $employeeId, $empStart, $empEnd, $attendanceDates, $scheduledDates
                 );
                 $paidLeaveRows = $attendancePolicy['paid_leave'];
                 $paidLeaveDays = array_sum(array_column($paidLeaveRows, 'days'));
                 $paidLeavePay = round($paidLeaveDays * $dailyRate, 2);
                 $approvedOtByDate = $this->approvedOvertimeRequestsByDate(
-                    $pdo, $employeeId, $periodStart, $periodEnd
+                    $pdo, $employeeId, $empStart, $empEnd
                 );
                 $paidOtByDate = $this->payableOvertimeByDate(
-                    $pdo, $employeeId, $periodStart, $periodEnd, $approvedOtByDate
+                    $pdo, $employeeId, $empStart, $empEnd, $approvedOtByDate
                 );
                 $totalOvertime = array_sum($paidOtByDate);
 
                 // Basic pay = days present × daily_rate
                 // (full days: worked_minutes >= standard_minutes - 30min tolerance)
-                $basicPay = round($daysCount * $dailyRate, 2);
+                $basicDays = $daysCount;
+                $basicPay  = round($basicDays * $dailyRate, 2);
 
                 // Overtime is paid only when attendance and an approved OT request agree.
-                // Holiday OT is re-attributed below; this will be adjusted for holiday rows.
-                $minuteRate  = $standardMinutes > 0 ? $dailyRate / $standardMinutes : 0;
-                $overtimePay = round($totalOvertime * $minuteRate * 1.25, 2);
+                // Round per date so holiday OT swaps match regular-day contributions to the centavo.
+                $minuteRate     = $standardMinutes > 0 ? $dailyRate / $standardMinutes : 0.0;
+                $regularOtByDate = [];
+                foreach ($paidOtByDate as $otDate => $otMins) {
+                    $dayStd  = $standardMinutesByDate[$otDate] ?? $standardMinutes;
+                    $dayRate = $dayStd > 0 ? $dailyRate / $dayStd : 0.0;
+                    $regularOtByDate[$otDate] = round($otMins * $dayRate * 1.25, 2);
+                }
+                $overtimePay = round(array_sum($regularOtByDate), 2);
 
                 // --- Holiday pay (REQ047, ADR-0001 §Holiday Pay) ---
                 // Fetch attendance rows that overlap an active holiday in this period.
-                // For each: compute holiday bundle, then apply an adjustment against the
-                // regular-day amounts already counted in $basicPay / $overtimePay.
+                // For each: compute holiday bundle (including rest-day multiplier), then
+                // apply an adjustment against the regular-day amounts already counted in
+                // $basicPay / $overtimePay. Also pay covered employees 100% daily rate
+                // for unworked Regular Holidays per DOLE Rule IV Sec. 6.
                 $holidayDayAdj = 0.0;
                 $holidayOtAdj  = 0.0;
                 $holidayEarningRows = [];
+                $handledHolidayDates = [];
 
                 $hStmt = $pdo->prepare(
                     "SELECT a.attendance_id,
@@ -607,62 +609,145 @@ final class PayrollService
                 );
                 $hStmt->execute([
                     ':emp_id' => $employeeId,
-                    ':start'  => $periodStart,
-                    ':end'    => $periodEnd,
+                    ':start'  => $empStart,
+                    ':end'    => $empEnd,
                 ]);
                 $holidayAttRows = $hStmt->fetchAll(PDO::FETCH_ASSOC);
 
                 foreach ($holidayAttRows as $hRow) {
+                    $hDate      = (string) $hRow['attendance_date'];
+                    $handledHolidayDates[$hDate] = true;
                     $hType      = HolidayType::from($hRow['holiday_type']);
                     $workedMins = (int) $hRow['hours_worked_minutes'];
-                    $hOtMins    = $paidOtByDate[(string) $hRow['attendance_date']] ?? 0;
+                    $hOtMins    = $paidOtByDate[$hDate] ?? 0;
                     $worked     = $workedMins > 0;
+                    $isRestDay  = array_key_exists($hDate, $scheduledDates) && !$scheduledDates[$hDate];
+                    $dayStd     = $standardMinutesByDate[$hDate] ?? $standardMinutes;
+                    $dayMinRate = $dayStd > 0 ? $dailyRate / $dayStd : 0.0;
 
                     $bundle = $this->holidayCalc->computeBundle(
                         dailyRate:       $dailyRate,
                         type:            $hType,
                         worked:          $worked,
-                        isRestDay:       false, // rest-day detection requires schedule join; pending
+                        isRestDay:       $isRestDay,
                         overtimeMinutes: $hOtMins,
-                        standardMinutes: $standardMinutes,
+                        standardMinutes: $dayStd,
                     );
 
-                    // The attendance aggregation already counted this date as a regular day.
-                    // Swap out the regular-day contribution for the holiday amount.
-                    $regularDayAmt = $worked ? $dailyRate : 0.0;
-                    $holidayDayAdj += round($bundle['day_pay'] - $regularDayAmt, 2);
+                    // Every row in $holidayAttRows was already counted once in
+                    // $daysCount / $basicPay (1.00 × dailyRate). Reconcile that
+                    // exact regular-day amount with the holiday day_pay so a
+                    // zero-minute Approved row can never be double-paid and
+                    // SUM(payroll_earnings.amount) always equals gross_pay.
+                    $regularDayAmt     = $dailyRate;
+                    $holidayDayPremium = round($bundle['day_pay'] - $regularDayAmt, 2);
+                    if ($holidayDayPremium < 0.0 && $bundle['day_pay'] === 0.0) {
+                        // Zero-worked Approved row on a no-work-no-pay Special or
+                        // SpecialNonWorking holiday: exclude the unpaid day from
+                        // Basic Pay instead of applying a negative holiday adjustment
+                        // without a matching earning row.
+                        $basicDays = max(0, $basicDays - 1);
+                        $basicPay  = round($basicDays * $dailyRate, 2);
+                    } else {
+                        $holidayDayAdj += $holidayDayPremium;
+                        if ($holidayDayPremium > 0.0) {
+                            $holidayEarningRows[] = [
+                                'type'        => $bundle['earning_type'],
+                                'description' => $hRow['holiday_description'] . ' premium above Basic Pay',
+                                'qty'         => 1,
+                                'unit_rate'   => $dailyRate,
+                                'multiplier'  => max(0.0, $bundle['multiplier_used'] - 1.0),
+                                'amount'      => $holidayDayPremium,
+                            ];
+                        }
+                    }
 
                     // Swap regular OT for holiday OT on this date
-                    $regularOtAmt  = round($hOtMins * $minuteRate * 1.25, 2);
-                    $holidayOtAdj += round($bundle['overtime_pay'] - $regularOtAmt, 2);
-
-                    // Basic Pay already holds the normal daily amount for a worked
-                    // holiday, and regular OT already holds its normal premium.
-                    // Store only the extra holiday premium so itemized earnings sum
-                    // exactly to gross pay and do not appear to double-pay the day.
-                    $holidayDayPremium = round($bundle['day_pay'] - $regularDayAmt, 2);
-                    $holidayOtPremium  = round($bundle['overtime_pay'] - $regularOtAmt, 2);
-                    if ($holidayDayPremium > 0.0) {
-                        $holidayEarningRows[] = [
-                            'type'        => $bundle['earning_type'],
-                            'description' => $hRow['holiday_description'] . ' premium above Basic Pay',
-                            'qty'         => 1,
-                            'unit_rate'   => $dailyRate,
-                            'multiplier'  => $worked
-                                ? max(0.0, $bundle['multiplier_used'] - 1.0)
-                                : $bundle['multiplier_used'],
-                            'amount'      => $holidayDayPremium,
-                        ];
+                    $regularOtAmt     = $regularOtByDate[$hDate] ?? 0.0;
+                    $holidayOtPremium = round($bundle['overtime_pay'] - $regularOtAmt, 2);
+                    if ($holidayOtPremium < 0.0 && $bundle['overtime_pay'] === 0.0 && $regularOtAmt > 0.0) {
+                        // Zero-worked holiday row cannot earn regular OT; remove that
+                        // date from regular OT so Overtime earnings match gross_pay.
+                        unset($regularOtByDate[$hDate], $paidOtByDate[$hDate]);
+                        $totalOvertime = array_sum($paidOtByDate);
+                        $overtimePay   = round(array_sum($regularOtByDate), 2);
+                    } else {
+                        $holidayOtAdj += $holidayOtPremium;
+                        if ($holidayOtPremium > 0.0 && $hOtMins > 0 && $dayMinRate > 0.0) {
+                            $holidayEarningRows[] = [
+                                'type'        => $bundle['earning_type'],
+                                'description' => $hRow['holiday_description'] . ' OT premium above regular OT',
+                                'qty'         => $hOtMins,
+                                'unit_rate'   => $dayMinRate,
+                                'multiplier'  => round(($bundle['overtime_pay'] / ($hOtMins * $dayMinRate)) - 1.25, 4),
+                                'amount'      => $holidayOtPremium,
+                            ];
+                        }
                     }
-                    if ($holidayOtPremium > 0.0 && $hOtMins > 0 && $minuteRate > 0.0) {
-                        $holidayEarningRows[] = [
-                            'type'        => $bundle['earning_type'],
-                            'description' => $hRow['holiday_description'] . ' OT premium above regular OT',
-                            'qty'         => $hOtMins,
-                            'unit_rate'   => $minuteRate,
-                            'multiplier'  => round(($bundle['overtime_pay'] / ($hOtMins * $minuteRate)) - 1.25, 4),
-                            'amount'      => $holidayOtPremium,
-                        ];
+                }
+
+                // Unworked Regular Holidays (DOLE Labor Code Art. 94 / Rule IV Sec. 6):
+                // Employees with no attendance record on a Regular Holiday (excluding
+                // unresolved Incomplete/ReviewRequired days) receive 100% daily rate
+                // only when they were present or on approved paid leave on the
+                // scheduled working day immediately preceding the holiday.
+                $unworkedHStmt = $pdo->prepare(
+                    "SELECT holiday_date, holiday_type, description
+                       FROM holiday_calendar
+                      WHERE status = 'Active'
+                        AND holiday_type = 'Regular'
+                        AND holiday_date BETWEEN :start AND :end
+                      ORDER BY holiday_date ASC"
+                );
+                $unworkedHStmt->execute([':start' => $empStart, ':end' => $empEnd]);
+                $regularHolidayRows = $unworkedHStmt->fetchAll(PDO::FETCH_ASSOC);
+
+                if ($regularHolidayRows !== []) {
+                    $anyAttStmt = $pdo->prepare(
+                        "SELECT a.attendance_date
+                           FROM attendance a
+                           LEFT JOIN attendance_import_batch aib ON aib.import_batch_id = a.import_batch_id
+                          WHERE a.employee_id = :emp_id
+                            AND a.attendance_date BETWEEN :start AND :end
+                            AND a.status <> 'Cancelled'
+                            AND (a.import_batch_id IS NULL OR aib.status <> 'Cancelled')"
+                    );
+                    $anyAttStmt->execute([
+                        ':emp_id' => $employeeId,
+                        ':start'  => $empStart,
+                        ':end'    => $empEnd,
+                    ]);
+                    $anyAttendanceDates = array_fill_keys(
+                        array_map('strval', $anyAttStmt->fetchAll(PDO::FETCH_COLUMN)),
+                        true,
+                    );
+
+                    foreach ($regularHolidayRows as $uhRow) {
+                        $uhDate = (string) $uhRow['holiday_date'];
+                        if (isset($handledHolidayDates[$uhDate])
+                            || isset($attendanceDates[$uhDate])
+                            || isset($anyAttendanceDates[$uhDate])) {
+                            continue;
+                        }
+                        if (!$this->isEligibleForUnworkedRegularHoliday($pdo, $employeeId, $uhDate, $basicDays, $paidLeaveDays)) {
+                            continue;
+                        }
+                        $bundle = $this->holidayCalc->computeBundle(
+                            dailyRate: $dailyRate,
+                            type:      HolidayType::Regular,
+                            worked:    false,
+                        );
+                        if ($bundle['day_pay'] > 0.0) {
+                            $holidayDayAdj += $bundle['day_pay'];
+                            $holidayEarningRows[] = [
+                                'type'        => $bundle['earning_type'],
+                                'description' => (string) $uhRow['description'] . ' (unworked regular holiday)',
+                                'qty'         => 1,
+                                'unit_rate'   => $dailyRate,
+                                'multiplier'  => $bundle['multiplier_used'],
+                                'amount'      => $bundle['day_pay'],
+                            ];
+                        }
                     }
                 }
 
@@ -671,25 +756,50 @@ final class PayrollService
                 // EEMR = (daily_rate × eemr_days_per_year) / 12
                 $eemr = round(($dailyRate * $eemrDaysPerYear) / 12, 2);
 
-                // --- Contributions (Wire #3) ---
-                $sssEmployee  = $applyContributions ? $this->computeSss($eemr, $sssBrackets) : 0.0;
-                $sssEmployer  = $applyContributions ? $this->computeSssEmployer($eemr, $sssBrackets) : 0.0;
-                $philEmployee = $applyContributions ? $this->computePhilhealth($eemr, $philRate, true) : 0.0;
-                $philEmployer = $applyContributions ? $this->computePhilhealth($eemr, $philRate, false) : 0.0;
-                $pagEmployee  = $applyContributions ? $this->computePagibig($eemr, $pagibigRate, true) : 0.0;
-                $pagEmployer  = $applyContributions ? $this->computePagibig($eemr, $pagibigRate, false) : 0.0;
-
                 // --- Late deduction ---
                 $lateDed = round($totalLate * $lateRatePerMin, 2);
 
                 // --- Undertime deduction ---
-                $undertimeDed = round($totalUndertime * $minuteRate, 2);
+                $undertimeDed = round($undertimeDedRaw, 2);
 
-                // --- Cash advance outstanding balance ---
-                $caDed = $this->outstandingCashAdvance($pdo, $employeeId);
+                // --- Contributions, Withholding Tax & Cash Advance ---
+                // When gross pay is ₱0.00 (no worked days, no paid leave, no holiday pay),
+                // skip statutory employee contributions, withholding tax, and cash advance repayment.
+                $caHistoryId = null;
+                if ($grossPay <= 0.0) {
+                    $sssEmployee  = 0.0;
+                    $sssEmployer  = 0.0;
+                    $philEmployee = 0.0;
+                    $philEmployer = 0.0;
+                    $pagEmployee  = 0.0;
+                    $pagEmployer  = 0.0;
+                    $incomeTax    = 0.0;
+                    $caDed        = 0.0;
+                } else {
+                    $sssEmployee  = $applyContributions ? $this->computeSss($eemr, $sssBrackets) : 0.0;
+                    $sssEmployer  = $applyContributions ? $this->computeSssEmployer($eemr, $sssBrackets) : 0.0;
+                    $philEmployee = $applyContributions ? $this->computePhilhealth($eemr, $philRate, true) : 0.0;
+                    $philEmployer = $applyContributions ? $this->computePhilhealth($eemr, $philRate, false) : 0.0;
+                    $pagEmployee  = $applyContributions ? $this->computePagibig($eemr, $pagibigRate, true) : 0.0;
+                    $pagEmployer  = $applyContributions ? $this->computePagibig($eemr, $pagibigRate, false) : 0.0;
+
+                    $taxableIncome = max(
+                        0.0,
+                        round($grossPay - ($sssEmployee + $philEmployee + $pagEmployee + $lateDed + $undertimeDed), 2)
+                    );
+                    $incomeTax = $this->taxCalc->computeWeekly($taxableIncome, $annualTaxThreshold);
+
+                    $availableForCa = max(
+                        0.0,
+                        round($grossPay - ($sssEmployee + $philEmployee + $pagEmployee + $lateDed + $undertimeDed + $incomeTax), 2)
+                    );
+                    $caInfo       = $this->activeCashAdvanceInfo($pdo, $employeeId);
+                    $caHistoryId  = $caInfo['history_id'];
+                    $caDed        = round(min($caInfo['repayment'], $availableForCa), 2);
+                }
 
                 // --- Totals ---
-                $totalDed = $sssEmployee + $philEmployee + $pagEmployee + $lateDed + $undertimeDed + $caDed;
+                $totalDed = round($sssEmployee + $philEmployee + $pagEmployee + $lateDed + $undertimeDed + $incomeTax + $caDed, 2);
                 $netPay   = round($grossPay - $totalDed, 2);
                 if ($netPay < 0) {
                     $netPay = 0.0;
@@ -725,7 +835,7 @@ final class PayrollService
                 $payrollId = (int) $pdo->lastInsertId();
 
                 // --- Earnings rows ---
-                $this->insertEarning($pdo, $payrollId, 'Basic', 'Basic Pay', $daysCount, $dailyRate, 1.0, $basicPay, $now);
+                $this->insertEarning($pdo, $payrollId, 'Basic', 'Basic Pay', $basicDays, $dailyRate, 1.0, $basicPay, $now);
                 foreach ($paidLeaveRows as $leave) {
                     $leaveAmount = round((float) $leave['days'] * $dailyRate, 2);
                     $this->insertEarning(
@@ -742,7 +852,8 @@ final class PayrollService
                     );
                 }
                 if ($overtimePay > 0) {
-                    $this->insertEarning($pdo, $payrollId, 'Overtime', 'Approved overtime pay', $totalOvertime, $minuteRate, 1.25, $overtimePay, $now);
+                    $otUnitRate = $totalOvertime > 0 ? ($overtimePay / ($totalOvertime * 1.25)) : $minuteRate;
+                    $this->insertEarning($pdo, $payrollId, 'Overtime', 'Approved overtime pay', $totalOvertime, $otUnitRate, 1.25, $overtimePay, $now);
                 }
                 // --- Holiday earnings rows (REQ047) ---
                 foreach ($holidayEarningRows as $hr) {
@@ -759,7 +870,8 @@ final class PayrollService
                     $this->insertDeduction($pdo, $payrollId, 'Late', 'Late deduction', $totalLate, $lateRatePerMin, $lateDed, $now);
                 }
                 if ($undertimeDed > 0) {
-                    $this->insertDeduction($pdo, $payrollId, 'Undertime', 'Undertime deduction', $totalUndertime, $minuteRate, $undertimeDed, $now);
+                    $utUnitRate = $totalUndertime > 0 ? ($undertimeDedRaw / $totalUndertime) : $minuteRate;
+                    $this->insertDeduction($pdo, $payrollId, 'Undertime', 'Undertime deduction', $totalUndertime, $utUnitRate, $undertimeDed, $now);
                 }
                 if ($attendancePolicy['unpaid_absence_days'] > 0) {
                     $this->insertDeduction(
@@ -773,30 +885,31 @@ final class PayrollService
                         $now,
                     );
                 }
+                if ($incomeTax > 0) {
+                    $this->insertDeduction(
+                        $pdo,
+                        $payrollId,
+                        'IncomeTax',
+                        'BIR withholding tax (TRAIN weekly table)',
+                        1,
+                        $incomeTax,
+                        $incomeTax,
+                        $now,
+                    );
+                }
                 if ($caDed > 0) {
-                    $this->insertDeduction($pdo, $payrollId, 'CashAdvance', 'Cash advance repayment', 1, $caDed, $caDed, $now);
-
-                    // Decrement the remaining balance on the active obligation row.
-                    // If the repayment clears the balance entirely, mark it Settled
-                    // so it is excluded from future runs.
-                    $pdo->prepare(
-                        "UPDATE cash_advance_history
-                            SET remaining_balance = GREATEST(0, remaining_balance - :deducted),
-                                status = CASE
-                                    WHEN GREATEST(0, remaining_balance - :deducted2) = 0
-                                    THEN 'Settled'
-                                    ELSE status
-                                END,
-                                updated_at = NOW()
-                          WHERE employee_id = :emp_id
-                            AND status = 'Active'
-                          ORDER BY approved_at DESC
-                          LIMIT 1"
-                    )->execute([
-                        ':deducted'  => $caDed,
-                        ':deducted2' => $caDed,
-                        ':emp_id'    => $employeeId,
-                    ]);
+                    $this->insertDeduction(
+                        $pdo,
+                        $payrollId,
+                        'CashAdvance',
+                        'Cash advance repayment',
+                        1,
+                        $caDed,
+                        $caDed,
+                        $now,
+                        false,
+                        $caHistoryId !== null ? ['history_id' => $caHistoryId] : [],
+                    );
                 }
 
                 // --- Government contribution deduction rows + contribution_record ---
@@ -831,7 +944,15 @@ final class PayrollService
                         ':emp'     => $empShare,
                         ':emplr'   => $emplrShare,
                         ':ddate'   => $deductionDate,
-                        ':details' => json_encode(['eemr' => $eemr, 'type' => $type]),
+                        ':details' => json_encode($type === 'SSS'
+                            ? [
+                                'eemr' => $eemr,
+                                'type' => $type,
+                                'msc'  => SssContributionSchedule::mscFor($eemr),
+                                // Employer share already includes this EC premium.
+                                'ec'   => SssContributionSchedule::ecFor(SssContributionSchedule::mscFor($eemr)),
+                            ]
+                            : ['eemr' => $eemr, 'type' => $type]),
                         ':now'     => $now,
                     ]);
                 }
@@ -883,6 +1004,8 @@ final class PayrollService
             throw new RuntimeException('Only Computed or Returned runs can be submitted for approval.');
         }
 
+        (new PayrollPeriodClosure())->assertEnded((string) $run['period_end'], $this->manilaToday(), 'submitted for approval');
+
         $submittedNow = $this->utcNow();
         $updated = $pdo->prepare(
             "UPDATE payroll_run SET
@@ -928,6 +1051,8 @@ final class PayrollService
             throw new RuntimeException('Only runs pending approval can be approved.');
         }
 
+        (new PayrollPeriodClosure())->assertEnded((string) $run['period_end'], $this->manilaToday(), 'approved');
+
         $now = $this->utcNow();
 
         $this->connection->transaction(function () use ($pdo, $runId, $reviewedByUserId, $now): void {
@@ -960,6 +1085,70 @@ final class PayrollService
                 ':locked_by' => $reviewedByUserId,
                 ':run_id'    => $runId,
             ]);
+
+            // 2b. Settle Cash Advance repayments upon Owner approval (REQ046 / ADR-0001).
+            // Decrement cash_advance_history.remaining_balance and record an audit row
+            // in cash_advance_repayment only when the payroll run is finalized.
+            $caStmt = $pdo->prepare(
+                "SELECT d.deduction_id, d.payroll_id, d.amount, d.calculation_details, p.employee_id
+                   FROM deduction d
+                   JOIN payroll p ON p.payroll_id = d.payroll_id
+                  WHERE p.payroll_run_id = :run_id
+                    AND d.deduction_type = 'CashAdvance'
+                    AND d.amount > 0"
+            );
+            $caStmt->execute([':run_id' => $runId]);
+            foreach ($caStmt->fetchAll(PDO::FETCH_ASSOC) as $caDedRow) {
+                $details = json_decode((string) ($caDedRow['calculation_details'] ?? '{}'), true);
+                $historyId = is_array($details) && isset($details['history_id']) && (int) $details['history_id'] > 0
+                    ? (int) $details['history_id'] : null;
+
+                if ($historyId === null) {
+                    $hLookup = $pdo->prepare(
+                        "SELECT history_id
+                           FROM cash_advance_history
+                          WHERE employee_id = :emp_id AND status = 'Active'
+                          ORDER BY approved_at DESC, history_id DESC
+                          LIMIT 1"
+                    );
+                    $hLookup->execute([':emp_id' => (int) $caDedRow['employee_id']]);
+                    $foundH = $hLookup->fetchColumn();
+                    $historyId = $foundH !== false ? (int) $foundH : null;
+                }
+
+                if ($historyId !== null) {
+                    $dedAmount = (float) $caDedRow['amount'];
+                    $pdo->prepare(
+                        "UPDATE cash_advance_history
+                            SET status = CASE
+                                    WHEN remaining_balance <= :ded1
+                                    THEN 'Paid'
+                                    ELSE status
+                                END,
+                                remaining_balance = GREATEST(0, remaining_balance - :ded2),
+                                updated_at = :now
+                          WHERE history_id = :hid"
+                    )->execute([
+                        ':ded1' => $dedAmount,
+                        ':ded2' => $dedAmount,
+                        ':now'  => $now,
+                        ':hid'  => $historyId,
+                    ]);
+
+                    $pdo->prepare(
+                        "INSERT INTO cash_advance_repayment
+                            (history_id, payroll_id, deduction_id, amount, created_at)
+                         VALUES
+                            (:hid, :pid, :did, :amt, :now)"
+                    )->execute([
+                        ':hid' => $historyId,
+                        ':pid' => (int) $caDedRow['payroll_id'],
+                        ':did' => (int) $caDedRow['deduction_id'],
+                        ':amt' => $dedAmount,
+                        ':now' => $now,
+                    ]);
+                }
+            }
 
             // 3. Generate one payslip row per employee payroll row (REQ048)
             // Skip employees that already have a payslip for this run
@@ -1095,6 +1284,7 @@ final class PayrollService
             // combination (enforced by uq_payroll_period_employee). The cancellation
             // marks the run as historical; keeping stale child rows would cause a
             // duplicate-key error on every subsequent recompute attempt.
+            $pdo->prepare("DELETE FROM cash_advance_repayment WHERE payroll_id IN (SELECT payroll_id FROM payroll WHERE payroll_run_id = :id)")->execute([':id' => $runId]);
             $pdo->prepare("DELETE FROM contribution_record WHERE payroll_id IN (SELECT payroll_id FROM payroll WHERE payroll_run_id = :id)")->execute([':id' => $runId]);
             $pdo->prepare("DELETE FROM deduction         WHERE payroll_id IN (SELECT payroll_id FROM payroll WHERE payroll_run_id = :id)")->execute([':id' => $runId]);
             $pdo->prepare("DELETE FROM payroll_earnings  WHERE payroll_id IN (SELECT payroll_id FROM payroll WHERE payroll_run_id = :id)")->execute([':id' => $runId]);
@@ -1218,7 +1408,7 @@ final class PayrollService
             'employee_number'   => $header['employee_number'],
             'position'          => $header['position'] ?? '',
             'branch_name'       => $header['branch_name'],
-            'period'            => $header['period'],
+            'period'            => Formatter::date((string) $header['period_start']) . ' – ' . Formatter::date((string) $header['period_end']),
             'period_start'      => $header['period_start'],
             'period_end'        => $header['period_end'],
             'pay_date'          => $header['pay_date'],
@@ -1304,6 +1494,80 @@ final class PayrollService
     // Private — Contribution calculations (Wire #3)
     // ===================================================================
 
+    /**
+     * Eligible employees: branch assignment overlapping [period_start, period_end]
+     * (supports mid-period hires and employees archived/separated mid-period or
+     * before payroll computation so they are still paid for worked days in
+     * [eba.effective_from, eba.effective_to)).
+     *
+     * Shared by computeRun() and readinessIssues() so the pre-compute check
+     * looks at exactly the employees that Compute pays.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function eligibleEmployees(PDO $pdo, int $runId, string $periodStart, string $periodEnd): array
+    {
+        $stmt = $pdo->prepare(
+            "SELECT e.employee_id, e.employee_number, e.first_name, e.last_name,
+                    eba.branch_assignment_id,
+                    eba.effective_from AS eba_from,
+                    eba.effective_to   AS eba_to,
+                    s.salary_id, s.daily_rate,
+                    ws.standard_minutes
+               FROM employee_branch_assignment eba
+               JOIN employee e ON e.employee_id = eba.employee_id
+               JOIN salary s
+                 ON s.salary_id = (
+                     SELECT s2.salary_id
+                       FROM salary s2
+                      WHERE s2.employee_id    = e.employee_id
+                        AND s2.effective_from <= :pe1
+                        AND (s2.effective_to IS NULL OR s2.effective_to >= :ps2)
+                        AND (
+                            s2.status = 'Active'
+                            OR (s2.status IN ('Superseded', 'Archived') AND s2.effective_to IS NOT NULL)
+                        )
+                      ORDER BY (s2.effective_from <= :ps1_pref) DESC, s2.effective_from DESC, s2.salary_id DESC
+                      LIMIT 1
+                 )
+               LEFT JOIN employee_schedule_assignment esa
+                 ON esa.assignment_id = (
+                     SELECT esa2.assignment_id
+                       FROM employee_schedule_assignment esa2
+                      WHERE esa2.employee_id    = e.employee_id
+                        AND esa2.effective_from <= :pe3
+                        AND (esa2.effective_to IS NULL OR esa2.effective_to >= :ps4)
+                        AND (esa2.status = 'Active' OR esa2.effective_to IS NOT NULL)
+                      ORDER BY (esa2.effective_from <= :ps3_pref) DESC, esa2.effective_from DESC, esa2.assignment_id DESC
+                      LIMIT 1
+                 )
+               LEFT JOIN work_schedule ws
+                 ON ws.schedule_id = esa.schedule_id
+              WHERE eba.branch_assignment_id = (
+                  SELECT eba2.branch_assignment_id
+                    FROM employee_branch_assignment eba2
+                   WHERE eba2.employee_id = e.employee_id
+                     AND eba2.branch_id   = (SELECT branch_id FROM payroll_run WHERE payroll_run_id = :run_id)
+                     AND eba2.effective_from <= :pe5
+                     AND (eba2.effective_to IS NULL OR eba2.effective_to > :ps6)
+                   ORDER BY eba2.effective_from DESC, eba2.branch_assignment_id DESC
+                   LIMIT 1
+              )"
+        );
+        $stmt->execute([
+            ':pe1'      => $periodEnd,
+            ':ps2'      => $periodStart,
+            ':ps1_pref' => $periodStart,
+            ':pe3'      => $periodEnd,
+            ':ps4'      => $periodStart,
+            ':ps3_pref' => $periodStart,
+            ':pe5'      => $periodEnd,
+            ':ps6'      => $periodStart,
+            ':run_id'   => $runId,
+        ]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
     /** @param list<array<string,mixed>> $brackets */
     private function computeSss(float $eemr, array $brackets): float
     {
@@ -1368,24 +1632,28 @@ final class PayrollService
         return round($basis * $r, 2);
     }
 
-    private function outstandingCashAdvance(PDO $pdo, int $employeeId): float
+    /** @return array{history_id:?int,repayment:float} */
+    private function activeCashAdvanceInfo(PDO $pdo, int $employeeId): array
     {
         // Deduct minimum weekly repayment (₱500) if there is an active cash advance
         $stmt = $pdo->prepare(
-            "SELECT remaining_balance
+            "SELECT history_id, remaining_balance
                FROM cash_advance_history
-              WHERE employee_id = :id AND status = 'Active'
-              ORDER BY approved_at DESC
+              WHERE employee_id = :id AND status = 'Active' AND remaining_balance > 0
+              ORDER BY approved_at DESC, history_id DESC
               LIMIT 1"
         );
         $stmt->execute([':id' => $employeeId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         if (!$row) {
-            return 0.0;
+            return ['history_id' => null, 'repayment' => 0.0];
         }
-        $balance    = (float) $row['remaining_balance'];
-        $repayment  = 500.0; // ₱500/week (ADR-0001)
-        return min($repayment, $balance);
+        $balance   = (float) $row['remaining_balance'];
+        $repayment = 500.0; // ₱500/week (ADR-0001)
+        return [
+            'history_id' => (int) $row['history_id'],
+            'repayment'  => min($repayment, $balance),
+        ];
     }
 
     /**
@@ -1452,6 +1720,8 @@ final class PayrollService
                     COALESCE(ws.work_start_time, '07:00:00') AS work_start_time,
                     COALESCE(ws.work_end_time, '16:00:00') AS work_end_time,
                     COALESCE(ws.break_minutes, 60) AS break_minutes,
+                    CASE WHEN ws.schedule_id IS NULL THEN '12:00:00' ELSE ws.break_start_time END AS break_start_time,
+                    CASE WHEN ws.schedule_id IS NULL THEN '13:00:00' ELSE ws.break_end_time END AS break_end_time,
                     COALESCE(ws.standard_minutes, 480) AS standard_minutes,
                     COALESCE(ws.overtime_allowed, 0) AS overtime_allowed
                FROM attendance a
@@ -1480,6 +1750,8 @@ final class PayrollService
                 (int) $row['break_minutes'],
                 (int) $row['standard_minutes'],
                 $approvedOtByDate[$date] ?? [],
+                $row['break_start_time'] !== null ? (string) $row['break_start_time'] : null,
+                $row['break_end_time'] !== null ? (string) $row['break_end_time'] : null,
             );
             if ($minutes > 0) {
                 $payable[$date] = $minutes;
@@ -1497,7 +1769,7 @@ final class PayrollService
     {
         $stmt = $pdo->query(
             "SELECT policy_id, policy_code, eemr_days_per_year,
-                    late_rate_per_minute, rounding_mode
+                    annual_tax_threshold, late_rate_per_minute, rounding_mode
                FROM payroll_policy_version
               WHERE status = 'Approved'
               ORDER BY effective_from DESC
@@ -1531,6 +1803,7 @@ final class PayrollService
                 'policy_id'            => $newId,
                 'policy_code'          => 'DEFAULT',
                 'eemr_days_per_year'   => 313,
+                'annual_tax_threshold' => 250000.00,
                 'late_rate_per_minute' => 1.00,
                 'rounding_mode'        => 'HalfUp',
             ];
@@ -1590,7 +1863,7 @@ final class PayrollService
     {
         $stmt = $pdo->prepare(
             "SELECT ppv.policy_id, ppv.eemr_days_per_year,
-                    ppv.late_rate_per_minute, ppv.rounding_mode
+                    ppv.annual_tax_threshold, ppv.late_rate_per_minute, ppv.rounding_mode
                FROM payroll_run pr
                JOIN payroll_policy_version ppv ON ppv.policy_id = pr.payroll_policy_id
               WHERE pr.payroll_run_id = :id"
@@ -1615,9 +1888,9 @@ final class PayrollService
         );
         $policy = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : false;
         if (!$policy) {
-            // No approved contribution policy exists — insert the ADR-0001
-            // demo defaults so payroll computation can proceed without manual
-            // DB seeding on fresh deployments.
+            // No approved contribution policy exists — insert the canonical
+            // PH-STATUTORY-2026 policy (SSS Circular 2024-006 15%, PhilHealth 5%,
+            // Pag-IBIG 2% up to ₱10,000 MFS) so payroll computation is statutory-accurate.
             $now = $this->utcNow();
 
             $ins = $pdo->prepare(
@@ -1625,8 +1898,8 @@ final class PayrollService
                     (policy_code, version, effective_from, effective_to,
                      demo_only, status, approved_by, approved_at, created_at, updated_at)
                  VALUES
-                    ('DEFAULT', 'V1', '2024-01-01', NULL,
-                     TRUE, 'Approved', NULL, :approved_at, :created_at, :updated_at)"
+                    ('PH-STATUTORY-2026', 'V1', '2026-01-01', NULL,
+                     FALSE, 'Approved', NULL, :approved_at, :created_at, :updated_at)"
             );
             $ins->execute([
                 ':approved_at' => $now,
@@ -1635,33 +1908,42 @@ final class PayrollService
             ]);
             $cpvId = (int) $pdo->lastInsertId();
 
-            // SSS bracket — single open-ended bracket (ADR-0001 demo values)
-            $pdo->prepare(
+            $bracketIns = $pdo->prepare(
                 "INSERT INTO sss_bracket
                     (contribution_policy_id, salary_from, salary_to,
                      employee_share, employer_share,
                      effective_from, effective_to, created_at, updated_at)
                  VALUES
-                    (:cpv, 0.00, NULL, 540.00, 1140.00,
-                     '2024-01-01', NULL, :ca, :ua)"
-            )->execute([':cpv' => $cpvId, ':ca' => $now, ':ua' => $now]);
+                    (:cpv, :from, :to, :ee, :er, '2026-01-01', NULL, :ca, :ua)"
+            );
+            foreach (SssContributionSchedule::brackets() as $b) {
+                $bracketIns->execute([
+                    ':cpv'  => $cpvId,
+                    ':from' => $b['salary_from'],
+                    ':to'   => $b['salary_to'],
+                    ':ee'   => $b['employee_share'],
+                    ':er'   => $b['employer_share'],
+                    ':ca'   => $now,
+                    ':ua'   => $now,
+                ]);
+            }
 
-            // PhilHealth — 4% total, 2% employee share (ADR-0001 demo values)
+            // PhilHealth — 5% total, 2.5% employee share, floor ₱10k / ceiling ₱100k
             $pdo->prepare(
                 "INSERT INTO philhealth_rate
                     (contribution_policy_id, rate_decimal, basis_floor, basis_ceiling,
                      employee_share_decimal, created_at, updated_at)
                  VALUES
-                    (:cpv, 0.040000, NULL, NULL, 0.020000, :ca, :ua)"
+                    (:cpv, 0.050000, 10000.00, 100000.00, 0.025000, :ca, :ua)"
             )->execute([':cpv' => $cpvId, ':ca' => $now, ':ua' => $now]);
 
-            // Pag-IBIG — ₱200 fixed employee + ₱200 employer (ADR-0001 demo values)
+            // Pag-IBIG — 2% rate, MFS ceiling ₱10,000
             $pdo->prepare(
                 "INSERT INTO pagibig_rate
                     (contribution_policy_id, rate_decimal, basis_ceiling,
                      employee_fixed_amount, employer_fixed_amount, created_at, updated_at)
                  VALUES
-                    (:cpv, NULL, NULL, 200.00, 200.00, :ca, :ua)"
+                    (:cpv, 0.020000, 10000.00, NULL, NULL, :ca, :ua)"
             )->execute([':cpv' => $cpvId, ':ca' => $now, ':ua' => $now]);
 
             return ['contribution_policy_id' => $cpvId];
@@ -1717,12 +1999,133 @@ final class PayrollService
     }
 
     /**
+     * Map each date in [$periodStart, $periodEnd] covered by an effective
+     * schedule assignment to whether that date is a scheduled working day
+     * (true) or a scheduled rest day (false).
+     *
+     * @return array<string, bool>
+     */
+    private function scheduledDatesForPeriod(
+        PDO $pdo,
+        int $employeeId,
+        string $periodStart,
+        string $periodEnd,
+    ): array {
+        // Shared with RequestService so a leave request is charged exactly the
+        // days payroll will pay.
+        return (new WorkCalendarRepository(new Connection([], $pdo)))
+            ->scheduledDates($employeeId, $periodStart, $periodEnd);
+    }
+
+    /**
+     * DOLE Labor Code Art. 94 / Omnibus Rules Book III, Rule IV, Sec. 6 & 10:
+     * A covered employee who did not work on a Regular Holiday is entitled to
+     * 100% daily rate when they were present (Complete/Approved attendance) or
+     * on approved paid leave on the scheduled working day immediately preceding
+     * the holiday. Rest days and preceding non-working holidays (e.g. Dec 24
+     * Christmas Eve or successive regular holidays) are skipped when looking
+     * back for that preceding working day; working on such a day also qualifies.
+     */
+    private function isEligibleForUnworkedRegularHoliday(
+        PDO $pdo,
+        int $employeeId,
+        string $holidayDate,
+        int $periodWorkedDays,
+        int $periodPaidLeaveDays,
+    ): bool {
+        $timezone = new DateTimeZone('Asia/Manila');
+        $holiday = new DateTimeImmutable($holidayDate, $timezone);
+        $lookbackEnd = $holiday->modify('-1 day')->format('Y-m-d');
+        $lookbackStart = $holiday->modify('-14 days')->format('Y-m-d');
+
+        $prevScheduled = $this->scheduledDatesForPeriod($pdo, $employeeId, $lookbackStart, $lookbackEnd);
+        if ($prevScheduled === []) {
+            return $periodWorkedDays > 0 || $periodPaidLeaveDays > 0;
+        }
+
+        $nonWorkingStmt = $pdo->prepare(
+            "SELECT holiday_date
+               FROM holiday_calendar
+              WHERE status = 'Active'
+                AND holiday_type IN ('Regular', 'SpecialNonWorking')
+                AND holiday_date BETWEEN :start AND :end"
+        );
+        $nonWorkingStmt->execute([':start' => $lookbackStart, ':end' => $lookbackEnd]);
+        $nonWorkingHolidays = array_fill_keys(
+            array_map('strval', $nonWorkingStmt->fetchAll(PDO::FETCH_COLUMN)),
+            true,
+        );
+
+        $workedStmt = $pdo->prepare(
+            "SELECT a.attendance_date
+               FROM attendance a
+               LEFT JOIN attendance_import_batch aib ON aib.import_batch_id = a.import_batch_id
+              WHERE a.employee_id = :emp_id
+                AND a.attendance_date BETWEEN :start AND :end
+                AND a.status IN ('Complete', 'Approved')
+                AND a.hours_worked_minutes > 0
+                AND (a.import_batch_id IS NULL OR aib.status IN ('Approved', 'Completed'))"
+        );
+        $workedStmt->execute([
+            ':emp_id' => $employeeId,
+            ':start'  => $lookbackStart,
+            ':end'    => $lookbackEnd,
+        ]);
+        $workedDates = array_fill_keys(
+            array_map('strval', $workedStmt->fetchAll(PDO::FETCH_COLUMN)),
+            true,
+        );
+
+        $leaveStmt = $pdo->prepare(
+            "SELECT lrd.start_date, lrd.end_date
+               FROM request r
+               JOIN request_type rt ON rt.request_type_id = r.request_type_id
+               JOIN leave_request_detail lrd ON lrd.request_id = r.request_id
+              WHERE r.employee_id = :emp_id
+                AND r.status = 'Approved'
+                AND rt.type_name = 'Leave'
+                AND lrd.start_date <= :end
+                AND lrd.end_date >= :start"
+        );
+        $leaveStmt->execute([
+            ':emp_id' => $employeeId,
+            ':start'  => $lookbackStart,
+            ':end'    => $lookbackEnd,
+        ]);
+        $leaveDates = [];
+        foreach ($leaveStmt->fetchAll(PDO::FETCH_ASSOC) as $leave) {
+            $start = max((string) $leave['start_date'], $lookbackStart);
+            $end   = min((string) $leave['end_date'], $lookbackEnd);
+            for ($d = new DateTimeImmutable($start, $timezone); $d <= new DateTimeImmutable($end, $timezone); $d = $d->modify('+1 day')) {
+                $leaveDates[$d->format('Y-m-d')] = true;
+            }
+        }
+
+        for ($day = $holiday->modify('-1 day'); $day >= new DateTimeImmutable($lookbackStart, $timezone); $day = $day->modify('-1 day')) {
+            $date = $day->format('Y-m-d');
+            if (isset($workedDates[$date]) || isset($leaveDates[$date])) {
+                return true;
+            }
+            if ((array_key_exists($date, $prevScheduled) && !$prevScheduled[$date])
+                || isset($nonWorkingHolidays[$date])) {
+                continue;
+            }
+            if (array_key_exists($date, $prevScheduled) && $prevScheduled[$date]) {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Resolve payroll-relevant leave and absence days from the employee's
      * historical work schedule. A day with qualifying attendance wins over a
      * leave request; approved leave wins over an absence; holidays are neither
      * absence nor leave-pay days here because holiday pay has its own policy.
      *
      * @param array<string, bool> $attendanceDates
+     * @param array<string, bool>|null $scheduledDates
      * @return array{
      *   paid_leave:list<array{request_id:int,leave_type:string,days:int}>,
      *   unpaid_absence_days:int
@@ -1734,51 +2137,57 @@ final class PayrollService
         string $periodStart,
         string $periodEnd,
         array $attendanceDates,
+        ?array $scheduledDates = null,
     ): array {
-        $scheduleStmt = $pdo->prepare(
-            "SELECT esa.effective_from, esa.effective_to, ws.working_days
-               FROM employee_schedule_assignment esa
-               JOIN work_schedule ws ON ws.schedule_id = esa.schedule_id
-              WHERE esa.employee_id = :employee_id
-                AND esa.effective_from <= :period_end
-                AND (esa.effective_to IS NULL OR esa.effective_to >= :period_start)
-              ORDER BY esa.effective_from DESC"
-        );
-        $scheduleStmt->execute([
-            ':employee_id' => $employeeId,
-            ':period_start' => $periodStart,
-            ':period_end' => $periodEnd,
-        ]);
-
-        $assignments = [];
-        foreach ($scheduleStmt->fetchAll(PDO::FETCH_ASSOC) as $assignment) {
-            $workingDays = json_decode((string) $assignment['working_days'], true);
-            if (!is_array($workingDays)) {
-                continue;
-            }
-            $assignments[] = [
-                'effective_from' => (string) $assignment['effective_from'],
-                'effective_to' => $assignment['effective_to'] !== null ? (string) $assignment['effective_to'] : null,
-                'working_days' => array_fill_keys(array_filter($workingDays, 'is_string'), true),
-            ];
-        }
-
-        $scheduledDates = [];
+        $scheduledDates ??= $this->scheduledDatesForPeriod($pdo, $employeeId, $periodStart, $periodEnd);
         $timezone = new DateTimeZone('Asia/Manila');
-        for ($day = new DateTimeImmutable($periodStart, $timezone); $day <= new DateTimeImmutable($periodEnd, $timezone); $day = $day->modify('+1 day')) {
-            $date = $day->format('Y-m-d');
-            foreach ($assignments as $assignment) {
-                if ($assignment['effective_from'] <= $date
-                    && ($assignment['effective_to'] === null || $assignment['effective_to'] >= $date)) {
-                    $scheduledDates[$date] = isset($assignment['working_days'][$day->format('l')]);
-                    break;
-                }
-            }
-        }
         $approvedUploadDates = $this->approvedAttendanceUploadDates(
             $pdo, $employeeId, $periodStart, $periodEnd
         );
+        $leaveByDate  = $this->approvedLeaveByDate($pdo, $employeeId, $periodStart, $periodEnd, $scheduledDates);
+        $holidayDates = $this->activeHolidayDates($pdo, $periodStart, $periodEnd);
 
+        $paidLeave = [];
+        $unpaidAbsenceDays = 0;
+        $today = (new DateTimeImmutable('now', $timezone))->format('Y-m-d');
+        foreach ($scheduledDates as $date => $isScheduled) {
+            if (!$isScheduled || isset($holidayDates[$date]) || isset($attendanceDates[$date])) {
+                continue;
+            }
+            if (isset($leaveByDate[$date])) {
+                $leave = $leaveByDate[$date];
+                $key = $leave['request_id'];
+                $paidLeave[$key] ??= [
+                    'request_id' => $leave['request_id'],
+                    'leave_type' => $leave['leave_type'],
+                    'days' => 0,
+                ];
+                $paidLeave[$key]['days']++;
+            } elseif ($date < $today && isset($approvedUploadDates[$date])) {
+                $unpaidAbsenceDays++;
+            }
+        }
+
+        return [
+            'paid_leave' => array_values($paidLeave),
+            'unpaid_absence_days' => $unpaidAbsenceDays,
+        ];
+    }
+
+    /**
+     * Approved leave on scheduled working days, keyed by Y-m-d.
+     *
+     * @param array<string, bool> $scheduledDates
+     * @return array<string, array{request_id:int, leave_type:string}>
+     */
+    private function approvedLeaveByDate(
+        PDO $pdo,
+        int $employeeId,
+        string $periodStart,
+        string $periodEnd,
+        array $scheduledDates,
+    ): array {
+        $timezone = new DateTimeZone('Asia/Manila');
         $leaveStmt = $pdo->prepare(
             "SELECT r.request_id, lrd.leave_type, lrd.start_date, lrd.end_date
                FROM request r
@@ -1812,64 +2221,200 @@ final class PayrollService
             }
         }
 
-        $holidayStmt = $pdo->prepare(
-            "SELECT holiday_date FROM holiday_calendar
-              WHERE status = 'Active' AND holiday_date BETWEEN :period_start AND :period_end"
-        );
-        $holidayStmt->execute([':period_start' => $periodStart, ':period_end' => $periodEnd]);
-        $holidayDates = array_fill_keys($holidayStmt->fetchAll(PDO::FETCH_COLUMN), true);
+        return $leaveByDate;
+    }
 
-        $paidLeave = [];
-        $unpaidAbsenceDays = 0;
-        $today = (new DateTimeImmutable('now', $timezone))->format('Y-m-d');
-        foreach ($scheduledDates as $date => $isScheduled) {
-            if (!$isScheduled || isset($holidayDates[$date]) || isset($attendanceDates[$date])) {
+    /** @return array<string, bool> Active holiday dates (Y-m-d) in the range. */
+    private function activeHolidayDates(PDO $pdo, string $periodStart, string $periodEnd): array
+    {
+        return (new WorkCalendarRepository(new Connection([], $pdo)))
+            ->activeHolidayDates($periodStart, $periodEnd);
+    }
+
+    /**
+     * Days in a payroll run's period that Compute would leave unpaid without
+     * any message (owner logic review C6): unresolved attendance, uploads not
+     * approved yet, working days with no upload, and dates with no schedule.
+     *
+     * @return list<array{employee_id:int, employee_number:string, employee_name:string, date:string, issue:string, label:string}>
+     */
+    public function readinessIssues(int $runId): array
+    {
+        $pdo = $this->connection->pdo();
+        $run = $this->findRunOrFail($runId);
+        $periodStart = (string) $run['period_start'];
+        $periodEnd   = (string) $run['period_end'];
+
+        $evaluator    = new PayrollReadinessEvaluator();
+        $holidayDates = $this->activeHolidayDates($pdo, $periodStart, $periodEnd);
+        $attendanceStmt = $pdo->prepare(
+            "SELECT a.attendance_date, a.status,
+                    CASE WHEN a.import_batch_id IS NULL
+                           OR aib.status IN ('Approved', 'Completed') THEN 1 ELSE 0 END AS upload_approved
+               FROM attendance a
+               LEFT JOIN attendance_import_batch aib ON aib.import_batch_id = a.import_batch_id
+              WHERE a.employee_id = :emp_id
+                AND a.attendance_date BETWEEN :start AND :end
+                AND a.status <> 'Cancelled'
+                AND (a.import_batch_id IS NULL OR aib.status <> 'Cancelled')"
+        );
+
+        $issues = [];
+        foreach ($this->eligibleEmployees($pdo, $runId, $periodStart, $periodEnd) as $emp) {
+            $employeeId = (int) $emp['employee_id'];
+            [$empStart, $empEnd] = $this->employeeWindow($emp, $periodStart, $periodEnd);
+            if ($empStart > $empEnd) {
                 continue;
             }
-            if (isset($leaveByDate[$date])) {
-                $leave = $leaveByDate[$date];
-                $key = $leave['request_id'];
-                $paidLeave[$key] ??= [
-                    'request_id' => $leave['request_id'],
-                    'leave_type' => $leave['leave_type'],
-                    'days' => 0,
+
+            $windowDates = [];
+            for ($day = new DateTimeImmutable($empStart); $day <= new DateTimeImmutable($empEnd); $day = $day->modify('+1 day')) {
+                $windowDates[] = $day->format('Y-m-d');
+            }
+
+            $attendanceStmt->execute([':emp_id' => $employeeId, ':start' => $empStart, ':end' => $empEnd]);
+            $attendance = [];
+            foreach ($attendanceStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $attendance[(string) $row['attendance_date']] = [
+                    'status'          => (string) $row['status'],
+                    'upload_approved' => (int) $row['upload_approved'] === 1,
                 ];
-                $paidLeave[$key]['days']++;
-            } elseif ($date < $today && isset($approvedUploadDates[$date])) {
-                $unpaidAbsenceDays++;
+            }
+
+            $scheduledDates = $this->scheduledDatesForPeriod($pdo, $employeeId, $empStart, $empEnd);
+            $leaveDates     = array_map(
+                static fn (): bool => true,
+                $this->approvedLeaveByDate($pdo, $employeeId, $empStart, $empEnd, $scheduledDates),
+            );
+            $uploadedDates  = $this->approvedAttendanceUploadDates($pdo, $employeeId, $empStart, $empEnd);
+
+            $name = trim((string) ($emp['last_name'] ?? '') . ', ' . (string) ($emp['first_name'] ?? ''), ', ');
+            foreach ($evaluator->evaluate($windowDates, $scheduledDates, $attendance, $holidayDates, $leaveDates, $uploadedDates) as $issue) {
+                $issues[] = [
+                    'employee_id'     => $employeeId,
+                    'employee_number' => (string) $emp['employee_number'],
+                    'employee_name'   => $name,
+                    'date'            => $issue['date'],
+                    'issue'           => $issue['issue'],
+                    'label'           => PayrollReadinessEvaluator::label($issue['issue']),
+                ];
             }
         }
 
-        return [
-            'paid_leave' => array_values($paidLeave),
-            'unpaid_absence_days' => $unpaidAbsenceDays,
-        ];
+        return $issues;
+    }
+
+    /**
+     * Compute only after HR has seen the days that would go unpaid.
+     *
+     * With unresolved days and no confirmation, nothing is computed and the
+     * run is left as it was. With confirmation, the run is computed and the
+     * confirmation is written to the audit log.
+     *
+     * @return int Number of unresolved days HR confirmed (0 when none).
+     */
+    public function computeRunIfReady(int $runId, int $computedByUserId, bool $confirmedUnresolvedDays): int
+    {
+        $issues = $this->readinessIssues($runId);
+        if ($issues !== [] && !$confirmedUnresolvedDays) {
+            $count = count($issues);
+            throw new RuntimeException(
+                "Payroll was not computed: {$count} day(s) would be left unpaid. "
+                . 'Resolve them in Attendance, or tick the confirmation box to compute without paying them.'
+            );
+        }
+
+        $this->computeRun($runId, $computedByUserId);
+
+        if ($issues !== []) {
+            $now   = $this->utcNow();
+            $count = count($issues);
+            $this->connection->pdo()->prepare(
+                "INSERT INTO audit_logs
+                    (user_id, event_type, action_performed, table_affected, record_id,
+                     description, action_at, created_at)
+                 VALUES
+                    (:user_id, 'payroll_computed', 'compute_with_unresolved_days', 'payroll_run', :record_id,
+                     :description, :action_at, :created_at)"
+            )->execute([
+                ':user_id'     => $computedByUserId,
+                ':record_id'   => $runId,
+                ':description' => "Payroll run {$runId} computed with {$count} unresolved day(s) confirmed as unpaid by HR.",
+                ':action_at'   => $now,
+                ':created_at'  => $now,
+            ]);
+        }
+
+        return count($issues);
+    }
+
+    /**
+     * The dates one employee is paid for in a run: the period, narrowed to the
+     * branch assignment (effective_to is the first day no longer assigned).
+     *
+     * @param array<string, mixed> $emp Row from eligibleEmployees().
+     * @return array{0:string, 1:string} [first date, last date]
+     */
+    private function employeeWindow(array $emp, string $periodStart, string $periodEnd): array
+    {
+        $empStart = max($periodStart, (string) ($emp['eba_from'] ?? $periodStart));
+        $empEnd   = ($emp['eba_to'] ?? null) !== null
+            ? min($periodEnd, (new DateTimeImmutable((string) $emp['eba_to']))->modify('-1 day')->format('Y-m-d'))
+            : $periodEnd;
+
+        return [$empStart, $empEnd];
     }
 
     /**
      * @return array<string, bool> Scheduled dates covered by an approved or
      *                              completed device import for this employee.
+     *                              When biometric punches exist for a batch,
+     *                              coverage is bounded to that batch's actual
+     *                              punch date range so partial-month uploads
+     *                              (e.g. aug.xls ending 08/28) do not mark
+     *                              uncovered trailing days as unpaid absences.
      */
     private function approvedAttendanceUploadDates(PDO $pdo, int $employeeId, string $periodStart, string $periodEnd): array
     {
-        $stmt = $pdo->prepare(
-            "SELECT eba.effective_from AS assignment_from, eba.effective_to AS assignment_to,
-                    dbb.effective_from AS device_from, dbb.effective_to AS device_to,
-                    aib.source_year, aib.source_month
-               FROM attendance_import_batch aib
-               JOIN biometric_device_branch dbb ON dbb.device_id = aib.device_id
-               JOIN employee_branch_assignment eba ON eba.branch_id = dbb.branch_id
-              WHERE eba.employee_id = :employee_id
-                AND aib.status IN ('Approved', 'Completed')"
-        );
+        if ($this->hasBatchPunchRangeSchema($pdo)) {
+            $sql = "SELECT eba.effective_from AS assignment_from, eba.effective_to AS assignment_to,
+                           dbb.effective_from AS device_from, dbb.effective_to AS device_to,
+                           aib.source_year, aib.source_month,
+                           MIN(DATE(bp.source_local_at)) AS min_punch_date,
+                           MAX(DATE(bp.source_local_at)) AS max_punch_date
+                      FROM attendance_import_batch aib
+                      JOIN biometric_device_branch dbb ON dbb.device_id = aib.device_id
+                      JOIN employee_branch_assignment eba ON eba.branch_id = dbb.branch_id
+                      LEFT JOIN biometric_punch bp ON bp.import_batch_id = aib.import_batch_id
+                     WHERE eba.employee_id = :employee_id
+                       AND aib.status IN ('Approved', 'Completed')
+                     GROUP BY eba.effective_from, eba.effective_to,
+                              dbb.effective_from, dbb.effective_to,
+                              aib.device_id, aib.source_year, aib.source_month";
+        } else {
+            $sql = "SELECT eba.effective_from AS assignment_from, eba.effective_to AS assignment_to,
+                           dbb.effective_from AS device_from, dbb.effective_to AS device_to,
+                           aib.source_year, aib.source_month,
+                           NULL AS min_punch_date, NULL AS max_punch_date
+                      FROM attendance_import_batch aib
+                      JOIN biometric_device_branch dbb ON dbb.device_id = aib.device_id
+                      JOIN employee_branch_assignment eba ON eba.branch_id = dbb.branch_id
+                     WHERE eba.employee_id = :employee_id
+                       AND aib.status IN ('Approved', 'Completed')";
+        }
+        $stmt = $pdo->prepare($sql);
         $stmt->execute([':employee_id' => $employeeId]);
 
         $covered = [];
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $batchMin = $row['min_punch_date'] !== null ? (string) $row['min_punch_date'] : null;
+            $batchMax = $row['max_punch_date'] !== null ? (string) $row['max_punch_date'] : null;
             for ($day = new DateTimeImmutable($periodStart); $day <= new DateTimeImmutable($periodEnd); $day = $day->modify('+1 day')) {
                 $date = $day->format('Y-m-d');
                 if ((int) $day->format('Y') !== (int) $row['source_year']
                     || (int) $day->format('n') !== (int) $row['source_month']
+                    || ($batchMin !== null && $date < $batchMin)
+                    || ($batchMax !== null && $date > $batchMax)
                     || (string) $row['assignment_from'] > $date
                     || ($row['assignment_to'] !== null && (string) $row['assignment_to'] < $date)
                     || (string) $row['device_from'] > $date
@@ -1881,6 +2426,34 @@ final class PayrollService
         }
 
         return $covered;
+    }
+
+    /**
+     * Always true on MySQL/MariaDB. On in-memory SQLite unit tests, checks
+     * whether the minimal test schema defines `biometric_punch` and
+     * `attendance_import_batch.import_batch_id` before joining punch ranges.
+     */
+    private function hasBatchPunchRangeSchema(PDO $pdo): bool
+    {
+        if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'sqlite') {
+            return true;
+        }
+        $tableStmt = $pdo->query(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'biometric_punch' LIMIT 1"
+        );
+        if ($tableStmt === false || !(bool) $tableStmt->fetchColumn()) {
+            return false;
+        }
+        $colStmt = $pdo->query('PRAGMA table_info(attendance_import_batch)');
+        if ($colStmt === false) {
+            return false;
+        }
+        foreach ($colStmt->fetchAll(PDO::FETCH_ASSOC) as $col) {
+            if (($col['name'] ?? '') === 'import_batch_id') {
+                return true;
+            }
+        }
+        return false;
     }
 
     private function insertEarning(
@@ -1920,11 +2493,13 @@ final class PayrollService
 
     /**
      * Insert a deduction row and return its ID.
+     *
+     * @param array<string,mixed> $extraDetails
      */
     private function insertDeduction(
         PDO $pdo, int $payrollId, string $type, string $desc,
         float $qty, float $unitRate, float $amount, string $now,
-        bool $returnId = false
+        bool $returnId = false, array $extraDetails = []
     ): int {
         $stmt = $pdo->prepare(
             "INSERT INTO deduction
@@ -1943,7 +2518,7 @@ final class PayrollService
             ':qty'     => $qty,
             ':rate'    => $unitRate,
             ':amount'  => $amount,
-            ':details' => json_encode(['qty' => $qty, 'unit_rate' => $unitRate]),
+            ':details' => json_encode(['qty' => $qty, 'unit_rate' => $unitRate] + $extraDetails),
             ':now'     => $now,
         ]);
         return (int) $pdo->lastInsertId();
@@ -1969,5 +2544,10 @@ final class PayrollService
     private function utcNow(): string
     {
         return (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
+    }
+
+    private function manilaToday(): string
+    {
+        return (new DateTimeImmutable('now', new DateTimeZone('Asia/Manila')))->format('Y-m-d');
     }
 }

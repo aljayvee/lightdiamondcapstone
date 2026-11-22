@@ -8,6 +8,7 @@ use PDO;
 use RuntimeException;
 use Wbpms\Http\Middleware\AuthMiddleware;
 use Wbpms\Http\View\ViewRenderer;
+use Wbpms\Http\View\UserMessage;
 use Wbpms\Infrastructure\Database\Connection;
 
 /**
@@ -75,11 +76,12 @@ final class BenefitsController
             $bind[':program']    = $filterProgram;
         }
         if ($filterSearch !== '') {
-            $pattern = '%' . $filterSearch . '%';
-            $where[] = '(e.last_name LIKE :search_last OR e.first_name LIKE :search_first OR e.employee_number LIKE :search_num)';
-            $bind[':search_last']  = $pattern;
-            $bind[':search_first'] = $pattern;
-            $bind[':search_num']   = $pattern;
+            // Every word in any order: first, middle, last name or number (REQ012).
+            [$nameSql, $nameParams] = \Wbpms\Infrastructure\Persistence\EmployeeNameSearch::condition($filterSearch, 'e', 'search_q');
+            if ($nameSql !== '') {
+                $where[] = $nameSql;
+                $bind    = array_merge($bind, $nameParams);
+            }
         }
         if ($filterFrom !== '') {
             $where[]          = 'pp.period_start >= :date_from';
@@ -182,7 +184,7 @@ final class BenefitsController
 
         if ($policy === false) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
@@ -269,7 +271,7 @@ final class BenefitsController
 
             ViewRenderer::flash('Contribution policy approved.');
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/hr/benefits/policies');

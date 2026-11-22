@@ -4,15 +4,13 @@
  *
  * Generates printable BDO Cash Transaction Slips.
  *
- * Print mode (?print=1) emits a DATA-ONLY overlay meant to be printed
- * directly onto a physical, pre-printed BDO Cash Transaction Slip: only the
- * fill-in values (account name/no, payor name, reference no, company name,
- * date, payroll amount, total) and the Savings/Current tick are printed, at
- * the exact coordinates of the on-screen layout, so they land on the form's
- * fields.  All form chrome (blue header, panels, labels, lines, boxes, grid,
- * footnotes) is suppressed.  Screen mode shows the filter form + preview.
- *
- * Page geometry (Landscape A5, 210mm × 148mm) is unchanged so positions hold.
+ * Print mode (?print=1) renders a replica of the BDO Network Bank Cash
+ * Transaction Slip on screen (form art, class .f) with the fill-in values
+ * (class .d) absolutely positioned in mm at coordinates measured from the
+ * scanned slip (2000 × 967 px → 210 × 101.5 mm).  When printed, only .d is
+ * output — onto the physical, pre-printed slip.  Calibrate a printer with
+ * the --nudge-x / --nudge-y CSS variables.  Screen mode (no ?print) shows the
+ * filter form + table.
  *
  * Variables injected by ReportsController::transactionSlips():
  *   array  $slips            — rows from payroll + bank_details join
@@ -50,13 +48,13 @@ $base             ??= '';
     </div>
     <?php if (!empty($slips)): ?>
     <a href="<?= $e($base) ?>/hr/reports/transaction-slips?<?= http_build_query(array_merge($filters, ['print' => '1'])) ?>"
-       target="_blank" class="btn btn-primary">🖨 Print Slips</a>
+       target="_blank" class="btn btn-primary"><?= \Wbpms\Http\View\Icon::svg('printer') ?> Print Slips</a>
     <?php endif; ?>
 </div>
 
 <?php if ($missingBankCount > 0): ?>
 <div class="alert info" role="alert" style="margin-bottom:1rem">
-    <strong>⚠ <?= (int) $missingBankCount ?> employee(s) have no bank account on file.</strong>
+    <strong><?= \Wbpms\Http\View\Icon::svg('alert') ?> <?= (int) $missingBankCount ?> employee(s) have no bank account on file.</strong>
     Their slips will print with blank account fields.
     Add bank account details through Employee Management to auto-fill these fields.
 </div>
@@ -74,7 +72,7 @@ $base             ??= '';
                 <?php foreach ($periods as $p): ?>
                     <option value="<?= (int) $p['payroll_period_id'] ?>"
                         <?= (int) $filters['payroll_period_id'] === (int) $p['payroll_period_id'] ? 'selected' : '' ?>>
-                        <?= $e($p['period_start']) ?> – <?= $e($p['period_end']) ?>
+                        <?= $e(Formatter::date($p['period_start'])) ?> – <?= $e(Formatter::date($p['period_end'])) ?>
                     </option>
                 <?php endforeach; ?>
             </select>
@@ -128,7 +126,7 @@ $base             ??= '';
         <strong><?= count($slips) ?> slip(s) found</strong>
         <a href="<?= $e($base) ?>/hr/reports/transaction-slips?<?= $e(http_build_query(array_merge($filters, ['print' => '1']))) ?>"
            target="_blank" class="btn btn-primary" style="font-size:12px;padding:6px 14px">
-            🖨 Open Print Preview
+            <?= \Wbpms\Http\View\Icon::svg('printer') ?> Open Print Preview
         </a>
     </div>
     <table class="data-table" style="font-size:13px">
@@ -150,7 +148,7 @@ $base             ??= '';
                 <div style="font-size:11px;color:var(--ink-2)"><?= $e($slip['employee_number']) ?></div>
             </td>
             <td><?= $e($slip['branch_name']) ?></td>
-            <td style="font-size:11px"><?= $e($slip['period_start']) ?> – <?= $e($slip['period_end']) ?></td>
+            <td style="font-size:11px"><?= $e(Formatter::date($slip['period_start'])) ?> – <?= $e(Formatter::date($slip['period_end'])) ?></td>
             <td style="font-weight:700">₱<?= number_format((float) $slip['net_pay'], 2) ?></td>
             <td><?= $slip['account_name'] ? $e($slip['account_name']) : '<span style="color:var(--bad);font-size:11px">Not on file</span>' ?></td>
             <td><?= $slip['account_number'] ? $e($slip['account_number']) : '<span style="color:var(--bad);font-size:11px">Not on file</span>' ?></td>
@@ -163,10 +161,15 @@ $base             ??= '';
 
 <?php else: ?>
 <!-- ================================================================
-     PRINT MODE — BDO Cash Transaction Slip
-     Landscape A5 (210mm × 148mm) matching the official slip image.
-     Left panel: blue header + checkboxes + fields
-     Right panel: light blue, Date + denomination grid
+     PRINT MODE — BDO Network Bank Cash Transaction Slip
+     Every label, line, box and value is absolutely positioned in mm,
+     measured from the scanned BDO slip (2000 × 967 px → 210 × 101.5 mm,
+     0.105 mm/px).  Two layers:
+       .f  = form art (header, labels, lines, boxes, grid)  — screen only
+       .d  = fill-in data (values + ticks)                  — screen + print
+     On paper only .d is printed, so it lands on the pre-printed slip.
+     Calibrate a printer by changing --nudge-x / --nudge-y only; never
+     move individual fields.
      ================================================================ -->
 <!doctype html>
 <html lang="en">
@@ -176,11 +179,23 @@ $base             ??= '';
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+:root {
+    --bdo-blue:  #0d4fa3;
+    --form-ink:  #1b2d55;
+    --line:      #24406f;
+    --rp-bg:     #e6edf4;
+    --nudge-x:   0mm;   /* printer calibration: + moves data right */
+    --nudge-y:   0mm;   /* printer calibration: + moves data down  */
+}
+
 body {
     font-family: Arial, Helvetica, sans-serif;
-    font-size: 8pt;
     background: #e8e8e8;
     color: #000;
+}
+.slip {
+    font-family: "Arial Narrow", "Roboto Condensed", "Helvetica Neue", Arial, sans-serif;
+    font-stretch: condensed;
 }
 
 /* ── Screen toolbar ─────────────────────────── */
@@ -208,554 +223,160 @@ body {
 }
 .no-print a { color: #93c5fd; font-size: 11px; text-decoration: none; }
 
-/* ── Slip container ──────────────────────────
-   A5 landscape: exactly 210mm × 148mm
-─────────────────────────────────────────────── */
+/* ── Slip canvas: 210mm × 101.5mm, true BDO slip aspect ratio ── */
 .slip {
+    position: relative;
     width: 210mm;
-    height: 148mm;
+    height: 101.5mm;
     margin: 8mm auto;
     background: #fff;
-    border: 1px solid #999;
-    display: flex;
-    flex-direction: row;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .25);
+    overflow: hidden;
     page-break-after: always;
     page-break-inside: avoid;
-    overflow: hidden;
 }
 .slip:last-child { page-break-after: auto; }
+.slip > * { position: absolute; }
 
-/* ==============================================
-   LEFT PANEL  (58% width, white)
-   ============================================== */
-.lp {
-    width: 58%;
-    display: flex;
-    flex-direction: column;
-    border-right: 1.5pt solid #1a56a0;
-}
+/* ── Form art (.f) ──────────────────────────── */
+.hdr   { left: 0; top: 0; width: 123.4mm; height: 12.1mm; background: var(--bdo-blue); }
+.rpbg  { left: 123.4mm; top: 0; width: 86.6mm; height: 101.5mm; background: var(--rp-bg); }
+.logo  { left: 3mm; top: 2.4mm; font-size: 22pt; font-weight: 900; color: #fff; letter-spacing: -.04em; line-height: 1; }
+.net   { left: 22mm; top: 4.6mm; font-size: 12pt; font-weight: 700; color: #fff; line-height: 1; }
+.ttl   { left: 80.3mm; top: 4.0mm; font-size: 13pt; font-weight: 700; color: #fff; line-height: 1; }
 
-/* Blue header bar (full width of left panel) */
-.lp-header {
-    background: #1a56a0;
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
-    padding: 3mm 5mm 3mm 4mm;
-    flex-shrink: 0;
-}
-.bdo-brand {
-    display: flex;
-    align-items: baseline;
-    gap: 2mm;
-}
-.bdo-logo {
-    color: #fff;
-    font-size: 19pt;
-    font-weight: 900;
-    letter-spacing: .02em;
-    line-height: 1;
-}
-.bdo-net {
-    color: #d0e8ff;
-    font-size: 9.5pt;
-    font-weight: 600;
-    letter-spacing: .02em;
-}
-.lp-title {
-    color: #fff;
-    font-size: 11pt;
-    font-weight: 700;
-    letter-spacing: .04em;
-}
+.lbl   { font-size: 7pt; color: var(--form-ink); line-height: 1.12; white-space: nowrap; }
+.lbl.sm { font-size: 6.3pt; letter-spacing: -.01em; }
+.lbl.xs { font-size: 5.6pt; font-weight: 700; letter-spacing: -.02em; }
+.lbl.ft { font-size: 6pt; font-style: italic; letter-spacing: -.01em; }
+.lbl.b  { font-weight: 700; }
 
-/* Body row: checkbox column + fields column */
-.lp-body {
-    display: flex;
-    flex-direction: row;
-    flex: 1;
-    min-height: 0;
-    padding: 2.5mm 3mm 1.5mm 3mm;
-    gap: 2.5mm;
-}
+.hl    { height: 0; border-top: .7pt solid var(--line); }               /* horizontal rule */
+.vl    { width: 0;  border-left: .7pt solid var(--line); }              /* vertical rule   */
+.tk    { width: 0;  height: 1.2mm; border-left: .7pt solid var(--line); } /* code tick       */
+.bx    { width: 2.4mm; height: 2.4mm; border: .8pt solid var(--form-ink); background: #fff; }
 
-/* ── Checkbox column (left strip) ─────────── */
-.cb-col {
-    width: 29mm;
-    flex-shrink: 0;
-    display: flex;
-    flex-direction: column;
-    gap: .7mm;
-    font-size: 7pt;
-    color: #1a56a0;
-}
-.ci {                        /* checkbox item */
-    display: flex;
-    align-items: flex-start;
-    gap: 1.5mm;
-    line-height: 1.3;
-}
-.ci.i1 { padding-left: 4mm; }   /* 1-level indent */
-.ci.i2 { padding-left: 8mm; }   /* 2-level indent */
-.ci.inline { flex-direction: row; align-items: center; gap: 2.5mm; }
-.sq {
-    width: 2.8mm;
-    height: 2.8mm;
-    border: .8pt solid #1a56a0;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 5.5pt;
-    font-weight: 900;
-    flex-shrink: 0;
-    margin-top: .2mm;
-    background: #fff;
-    color: #1a56a0;
-}
-.sq.on { background: #1a56a0; color: #fff; }
-.gap { height: 2.5mm; }       /* visual spacer between groups */
-.mv {                         /* Machine Validation */
-    margin-top: auto;
-    display: flex;
-    align-items: center;
-    gap: 1.5mm;
-    font-size: 6.5pt;
-    color: #555;
-    padding-top: 1mm;
-}
+/* ── Data (.d) ──────────────────────────────── */
+.d     { font-weight: 700; color: #000; white-space: nowrap; overflow: hidden; line-height: 4.4mm; height: 4.4mm;
+         transform: translate(var(--nudge-x), var(--nudge-y)); }
+.d.v   { font-size: 9pt; }
+.d.vs  { font-size: 8pt; }
+.d.chk { width: 2.4mm; height: 2.4mm; line-height: 2.4mm; text-align: center; font-size: 8pt; }
+.d.row { height: 8.1mm; line-height: 8.1mm; font-size: 9pt; }
+.d.tot { height: 8.2mm; line-height: 8.2mm; font-size: 11pt; text-align: right; }
+.r     { text-align: right; }
+.c     { text-align: center; }
 
-/* ── Fields column ────────────────────────── */
-.fc {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-    min-width: 0;
-}
-.fr {                         /* field row */
-    display: flex;
-    flex-direction: row;
-    gap: 2.5mm;
-    margin-bottom: 1.2mm;
-}
-.fg {                         /* field group */
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-}
-.fl {                         /* field label */
-    font-size: 6.5pt;
-    color: #1a56a0;
-    margin-bottom: .3mm;
-    white-space: nowrap;
-}
-.fv {                         /* field value line */
-    border-bottom: .8pt solid #1a56a0;
-    min-height: 5mm;
-    font-size: 8pt;
-    font-weight: 700;
-    padding: 0 1mm .4mm 1mm;
-    line-height: 1.3;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-}
-.fv.empty { color: #bbb; font-weight: 400; }
-
-/* Institution Code tick-mark line */
-.inst-line {
-    border-bottom: .8pt solid #1a56a0;
-    min-height: 5mm;
-    display: flex;
-    align-items: flex-end;
-    padding-bottom: .4mm;
-    gap: 1.3mm;
-    padding-left: .5mm;
-}
-.tick {
-    width: 5mm;
-    height: 3mm;
-    border-top: .6pt solid #1a56a0;
-}
-
-/* Footer "This serves as your receipt…" */
-.lp-footer {
-    flex-shrink: 0;
-    text-align: center;
-    font-size: 6pt;
-    color: #666;
-    font-style: italic;
-    padding: 1.5mm 3mm 1.5mm;
-    border-top: .4pt solid #ddd;
-}
-
-/* ==============================================
-   RIGHT PANEL (42% width, light blue)
-   ============================================== */
-.rp {
-    flex: 1;
-    background: #d8ecfb;
-    display: flex;
-    flex-direction: column;
-    padding: 2.5mm 3mm 2mm 3mm;
-}
-
-.rp-date {
-    display: flex;
-    align-items: center;
-    gap: 2mm;
-    margin-bottom: 2mm;
-}
-.rp-date-label {
-    font-size: 7.5pt;
-    color: #1a56a0;
-    font-weight: 700;
-    white-space: nowrap;
-}
-.rp-date-val {
-    flex: 1;
-    border-bottom: .8pt solid #1a56a0;
-    min-height: 4.5mm;
-    font-size: 8pt;
-    font-weight: 700;
-    padding: 0 1mm .3mm;
-}
-
-.rp-note {
-    font-size: 6.5pt;
-    color: #1a56a0;
-    font-weight: 600;
-    margin-bottom: 2mm;
-    line-height: 1.3;
-}
-
-/* Denomination table */
-.dt {
-    width: 100%;
-    border-collapse: collapse;
-    flex: 1;
-}
-.dt thead th {
-    font-size: 7pt;
-    font-weight: 700;
-    color: #1a56a0;
-    text-align: center;
-    border-bottom: 1pt solid #1a56a0;
-    padding: .5mm 1mm;
-}
-.dt thead th:first-child { text-align: left; }
-.dt tbody td {
-    height: 8mm;
-    border-bottom: .5pt solid #8bb8d8;
-    padding: 0 1.5mm;
-    vertical-align: middle;
-    font-size: 7.5pt;
-}
-.dt tbody td.pc {            /* Pieces column */
-    text-align: center;
-    border-left: .8pt solid #8bb8d8;
-    border-right: .8pt solid #8bb8d8;
-}
-.dt tbody td.am {            /* Amount column */
-    text-align: right;
-}
-.dt tfoot tr td {
-    border-top: 1.5pt solid #1a56a0;
-    border-bottom: 1pt solid #1a56a0;
-    height: 10mm;
-    background: #b8d8f0;
-    padding: 0 1.5mm;
-    vertical-align: middle;
-}
-.dt tfoot td.tl {            /* "Total Amount" label */
-    text-align: right;
-    font-size: 8pt;
-    font-weight: 700;
-    color: #1a56a0;
-    padding-right: 2mm;
-}
-.dt tfoot td.ta {            /* total amount value */
-    text-align: right;
-    font-size: 9.5pt;
-    font-weight: 700;
-    color: #1a56a0;
-    border-left: .8pt solid #8bb8d8;
-    white-space: nowrap;
-}
-
-/* ── Print ──────────────────────────────────── */
+/* ── Print: data only, onto the pre-printed slip ── */
 @media print {
-    .no-print { display: none !important; }
-    body       { background: #fff; margin: 0; }
-    .slip      { margin: 0; border: .5pt solid #aaa; }
-    @page      { size: A5 landscape; margin: 3mm; }
-}
-
-/* ==================================================================
-   DATA-ONLY OVERLAY — print onto a physical, pre-printed BDO Cash
-   Transaction Slip.  The hard copy already carries every label, line,
-   box, header and grid, so only the fill-in data and the Savings/
-   Current tick are printed, at the exact coordinates of the on-screen
-   layout.  Chrome ink is stripped (transparent bg / no borders) and
-   chrome text is hidden with visibility:hidden so every element's box
-   is preserved and nothing shifts.  Do NOT change sizes/padding/margins
-   or the data will no longer line up with the pre-printed form.
-   ================================================================== */
-
-/* Strip every background (header bar, right panel, total row, checked box) */
-.lp-header, .rp, .dt tfoot tr td, .sq, .sq.on {
-    background: transparent !important;
-}
-
-/* Strip every border / line / box outline (all are pre-printed on the form) */
-.slip, .lp, .lp-header, .fv, .inst-line, .tick,
-.rp-date-val, .lp-footer, .sq,
-.dt thead th, .dt tbody td, .dt tbody td.pc,
-.dt tfoot tr td, .dt tfoot td.ta {
-    border: 0 !important;
-    border-top: 0 !important;
-    border-bottom: 0 !important;
-    border-left: 0 !important;
-    border-right: 0 !important;
-}
-
-/* Hide chrome text but keep its space (visibility:hidden preserves layout) */
-.bdo-logo, .bdo-net, .lp-title,
-.fl,
-.rp-date-label,
-.rp-note,
-.lp-footer,
-.dt thead th,
-.dt tfoot td.tl {
-    visibility: hidden !important;
-}
-
-/* Hide checkbox-column label text (spans next to the .sq boxes) */
-.cb-col span:not(.sq) { visibility: hidden !important; }
-
-/* Keep the tick (✓) data visible in black, with no blue box around it */
-.sq, .sq.on { color: #000 !important; background: transparent !important; }
-
-/* Keep all fill-in values visible in black */
-.fv, .rp-date-val, .dt tbody td, .dt tfoot td.ta { color: #000 !important; }
-
-/* Screen-only guide: faint slip boundary in preview, never printed */
-@media screen {
-    .slip { outline: 1px dashed #ccc; outline-offset: -1px; }
+    @page      { size: A5 landscape; margin: 0; }
+    .no-print  { display: none !important; }
+    body       { background: #fff; }
+    .slip      { margin: 0; box-shadow: none; background: transparent; }
+    .f         { visibility: hidden !important; }
+    .d         { color: #000 !important; }
 }
 </style>
 </head>
 <body>
 
 <div class="no-print">
-    <button onclick="window.print()">🖨 Print All Slips (<?= count($slips) ?>)</button>
-    <a href="<?= $e($base) ?>/hr/reports/transaction-slips" class="btn btn-secondary">← Back to Transaction Slips</a>
-    <span style="margin-left:auto;opacity:.7">
-        <?= count($slips) ?> slip(s) &nbsp;·&nbsp; <?= $e(date('m/d/Y')) ?>
+    <button onclick="window.print()"><?= \Wbpms\Http\View\Icon::svg('printer') ?> Print All Slips (<?= count($slips) ?>)</button>
+    <a href="<?= $e($base) ?>/hr/reports/transaction-slips"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Transaction Slips</a>
+    <span style="margin-left:auto;opacity:.75">
+        Preview shows the full BDO slip &nbsp;·&nbsp; printing outputs data only (for pre-printed slips)
+        &nbsp;·&nbsp; <?= count($slips) ?> slip(s) &nbsp;·&nbsp; <?= $e(date('m/d/Y')) ?>
     </span>
 </div>
 
 <?php foreach ($slips as $slip):
-    $hasBankDetails = !empty($slip['account_number']);
-    $accountName    = !empty($slip['account_name'])   ? $slip['account_name']   : '';
-    $accountNo      = $hasBankDetails                 ? $slip['account_number'] : '';
-    $accountType    = !empty($slip['account_type'])   ? strtolower($slip['account_type']) : 'savings';
-    $isSavings      = $accountType === 'savings';
-    $isCurrent      = $accountType === 'current';
-    $referenceNo    = 'PR-' . date('Ymd', strtotime($slip['period_start']))
-                      . '-' . str_pad((string) $slip['employee_id'], 4, '0', STR_PAD_LEFT);
-    $netPay         = number_format((float) $slip['net_pay'], 2);
-    $periodLabel    = $slip['period_start'] . ' – ' . $slip['period_end'];
+    $accountName = !empty($slip['account_name'])   ? (string) $slip['account_name']   : '';
+    $accountNo   = !empty($slip['account_number']) ? (string) $slip['account_number'] : '';
+    $accountType = !empty($slip['account_type'])   ? strtolower((string) $slip['account_type']) : 'savings';
+    $isSavings   = $accountType === 'savings';
+    $isCurrent   = $accountType === 'current';
+    $referenceNo = 'PR-' . date('Ymd', (int) strtotime((string) $slip['period_start']))
+                   . '-' . str_pad((string) $slip['employee_id'], 4, '0', STR_PAD_LEFT);
+    $netPay      = number_format((float) $slip['net_pay'], 2);
 ?>
 <div class="slip">
 
-    <!-- ============ LEFT PANEL ============ -->
-    <div class="lp">
+    <!-- ===================== FORM ART (screen only) ===================== -->
+    <div class="f hdr"></div>
+    <div class="f rpbg"></div>
+    <div class="f logo">BDO</div>
+    <div class="f net">Network Bank</div>
+    <div class="f ttl">Cash Transaction Slip</div>
 
-        <!-- Blue header -->
-        <div class="lp-header">
-            <div class="bdo-brand">
-                <span class="bdo-logo">BDO</span>
-                <span class="bdo-net">Network Bank</span>
-            </div>
-            <span class="lp-title">Cash Transaction Slip</span>
-        </div>
+    <!-- Transaction-type checkboxes -->
+    <div class="f bx" style="left:3.2mm;top:15.3mm"></div> <div class="f lbl b" style="left:6.3mm;top:15.1mm">Deposits</div>
+    <div class="f bx" style="left:6.4mm;top:18.6mm"></div> <div class="f lbl b" style="left:9.4mm;top:18.4mm">Current</div>
+    <div class="f bx" style="left:6.4mm;top:21.8mm"></div> <div class="f lbl b" style="left:9.4mm;top:21.6mm">Savings</div>
+    <div class="f bx" style="left:6.4mm;top:25.1mm"></div> <div class="f lbl b" style="left:9.4mm;top:24.9mm">Time Deposit /<br>&nbsp;Placement</div>
+    <div class="f bx" style="left:9.6mm;top:30.6mm"></div> <div class="f lbl b" style="left:12.6mm;top:30.4mm">For Account with<br>Deposit Reference<br>Facility</div>
+    <div class="f bx" style="left:3.2mm;top:39.5mm"></div> <div class="f lbl b" style="left:6.3mm;top:39.3mm">Bills payment</div>
+    <div class="f bx" style="left:3.2mm;top:54.5mm"></div> <div class="f lbl b" style="left:6.3mm;top:54.3mm">Payment</div>
+    <div class="f bx" style="left:6.6mm;top:57.9mm"></div> <div class="f lbl b" style="left:9.6mm;top:57.7mm">Loan</div>
+    <div class="f bx" style="left:16.1mm;top:57.9mm"></div><div class="f lbl b" style="left:19.1mm;top:57.7mm">Trade</div>
+    <div class="f lbl xs" style="left:3.6mm;top:62.4mm">Machine Validation</div>
 
-        <!-- Body -->
-        <div class="lp-body">
+    <!-- Field labels -->
+    <div class="f lbl b" style="left:33.8mm;top:15.1mm">Account Name</div>
+    <div class="f lbl b" style="left:33.8mm;top:23.5mm">Account No.</div>
+    <div class="f lbl b" style="left:33.8mm;top:31.0mm">Payor's Name</div>
+    <div class="f lbl b" style="left:77.7mm;top:31.0mm">Reference No.</div>
+    <div class="f lbl b" style="left:34.1mm;top:39.2mm">Company Name</div>
+    <div class="f lbl b" style="left:77.7mm;top:39.2mm">Institution Code</div>
+    <div class="f lbl b" style="left:106.4mm;top:39.2mm">Product Code</div>
+    <div class="f lbl b" style="left:34.1mm;top:46.9mm">Subscriber's Name</div>
+    <div class="f lbl b" style="left:77.7mm;top:46.9mm">Subscriber's Account No.</div>
+    <div class="f lbl b" style="left:34.1mm;top:54.5mm">Borrower's Name</div>
+    <div class="f lbl b sm" style="left:77.7mm;top:54.6mm">Promissory Note No. / Trade Reference No.</div>
+    <div class="f lbl ft" style="left:42.5mm;top:94.8mm">This serves as your receipt when machine validated.</div>
 
-            <!-- Checkboxes -->
-            <div class="cb-col">
-                <div class="ci">
-                    <span class="sq on">✓</span><span>Deposits</span>
-                </div>
-                <div class="ci i1">
-                    <span class="sq <?= $isCurrent ? 'on' : '' ?>"><?= $isCurrent ? '✓' : '' ?></span><span>Current</span>
-                </div>
-                <div class="ci i1">
-                    <span class="sq <?= $isSavings ? 'on' : '' ?>"><?= $isSavings ? '✓' : '' ?></span><span>Savings</span>
-                </div>
-                <div class="ci i1">
-                    <span class="sq"></span><span>Time Deposit /<br>Placement</span>
-                </div>
-                <div class="ci i2" style="margin-top:.5mm">
-                    <span class="sq"></span><span>For Account with<br>Deposit Reference<br>Facility</span>
-                </div>
+    <!-- Left-panel rules -->
+    <div class="f hl" style="left:33.8mm;top:22.6mm;width:86.4mm"></div>
+    <div class="f hl" style="left:33.8mm;top:30.5mm;width:86.4mm"></div>
+    <div class="f hl" style="left:3.2mm;top:38.6mm;width:117mm"></div>
+    <div class="f hl" style="left:34.1mm;top:46.1mm;width:86.1mm"></div>
+    <div class="f hl" style="left:3.2mm;top:53.9mm;width:117mm"></div>
+    <div class="f hl" style="left:3.2mm;top:61.4mm;width:117mm"></div>
+    <!-- Institution / Product code ticks -->
+    <?php foreach ([77.7, 82.4, 87.1, 91.8, 96.5, 106.0, 110.7, 115.4, 120.0] as $tx): ?>
+    <div class="f tk" style="left:<?= $tx ?>mm;top:44.9mm"></div>
+    <?php endforeach; ?>
 
-                <div class="gap"></div>
-                <div class="ci">
-                    <span class="sq"></span><span>Bills payment</span>
-                </div>
+    <!-- Right panel: Date + denomination grid -->
+    <div class="f lbl b" style="left:126.3mm;top:4.0mm;font-size:8pt">Date</div>
+    <div class="f hl" style="left:126.3mm;top:13.7mm;width:79mm"></div>
+    <div class="f lbl b" style="left:126.3mm;top:14.8mm;font-size:7.2pt">Use separate slip(s) for each type of transaction.</div>
+    <div class="f lbl b c" style="left:126.3mm;top:18.9mm;width:31.9mm">Denomination</div>
+    <div class="f lbl b c" style="left:158.2mm;top:18.9mm;width:15.6mm">Pieces</div>
+    <div class="f lbl b c" style="left:173.8mm;top:18.9mm;width:31.5mm">Amount</div>
+    <?php foreach ([22.1, 30.2, 38.4, 46.7, 55.1, 63.3, 71.6, 79.8, 88.0] as $ry): ?>
+    <div class="f hl" style="left:126.3mm;top:<?= $ry ?>mm;width:79mm"></div>
+    <?php endforeach; ?>
+    <div class="f vl" style="left:158.2mm;top:22.1mm;height:57.7mm"></div>
+    <div class="f vl" style="left:173.8mm;top:22.1mm;height:65.9mm"></div>
+    <div class="f lbl b r" style="left:140mm;top:82.6mm;width:32.4mm;font-size:8.5pt">Total Amount</div>
 
-                <div class="gap"></div>
-                <div class="ci">
-                    <span class="sq"></span><span>Payment</span>
-                </div>
-                <div class="ci i1 inline">
-                    <span class="sq"></span><span>Loan</span>
-                    <span class="sq" style="margin-left:1mm"></span><span>Trade</span>
-                </div>
+    <!-- ===================== DATA (screen + print) ===================== -->
+    <div class="d chk" style="left:3.2mm;top:15.3mm">✓</div>
+    <?php if ($isCurrent): ?><div class="d chk" style="left:6.4mm;top:18.6mm">✓</div><?php endif; ?>
+    <?php if ($isSavings): ?><div class="d chk" style="left:6.4mm;top:21.8mm">✓</div><?php endif; ?>
 
-                <div class="mv">
-                    <span class="sq" style="border-color:#999"></span>
-                    <span>Machine Validation</span>
-                </div>
-            </div>
+    <div class="d v"  style="left:34.5mm;top:18.0mm;width:85mm"><?= $e($accountName) ?></div>
+    <div class="d v"  style="left:34.5mm;top:25.9mm;width:85mm"><?= $e($accountNo) ?></div>
+    <div class="d v"  style="left:34.5mm;top:34.3mm;width:42mm"><?= $e((string) $slip['employee_name']) ?></div>
+    <div class="d vs" style="left:78.2mm;top:34.3mm;width:42mm"><?= $e($referenceNo) ?></div>
+    <div class="d v"  style="left:34.8mm;top:41.5mm;width:42mm">Light Diamond Enterprises</div>
 
-            <!-- Fields -->
-            <div class="fc">
+    <div class="d v"  style="left:131mm;top:9.0mm;width:70mm"><?= $e(date('m/d/Y')) ?></div>
 
-                <!-- Account Name -->
-                <div class="fr">
-                    <div class="fg">
-                        <div class="fl">Account Name</div>
-                        <div class="fv <?= $accountName ? '' : 'empty' ?>">
-                            <?= $accountName ? $e($accountName) : '&nbsp;' ?>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Account No -->
-                <div class="fr">
-                    <div class="fg">
-                        <div class="fl">Account No.</div>
-                        <div class="fv <?= $accountNo ? '' : 'empty' ?>">
-                            <?= $accountNo ? $e($accountNo) : '&nbsp;' ?>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Payor's Name  |  Reference No -->
-                <div class="fr">
-                    <div class="fg">
-                        <div class="fl">Payor's Name</div>
-                        <div class="fv"><?= $e($slip['employee_name']) ?></div>
-                    </div>
-                    <div class="fg">
-                        <div class="fl">Reference No.</div>
-                        <div class="fv" style="font-size:7pt"><?= $e($referenceNo) ?></div>
-                    </div>
-                </div>
-
-                <!-- Company Name  |  Institution Code  |  Product Code -->
-                <div class="fr">
-                    <div class="fg" style="flex:2">
-                        <div class="fl">Company Name</div>
-                        <div class="fv">Light Diamond Enterprises</div>
-                    </div>
-                    <div class="fg" style="flex:1.2">
-                        <div class="fl">Institution Code</div>
-                        <div class="inst-line">
-                            <div class="tick"></div>
-                            <div class="tick"></div>
-                            <div class="tick"></div>
-                            <div class="tick"></div>
-                        </div>
-                    </div>
-                    <div class="fg" style="flex:.9">
-                        <div class="fl">Product Code</div>
-                        <div class="fv empty">&nbsp;</div>
-                    </div>
-                </div>
-
-                <!-- Subscriber's Name  |  Subscriber's Account No -->
-                <div class="fr">
-                    <div class="fg">
-                        <div class="fl">Subscriber's Name</div>
-                        <div class="fv empty">&nbsp;</div>
-                    </div>
-                    <div class="fg">
-                        <div class="fl">Subscriber's Account No.</div>
-                        <div class="fv empty">&nbsp;</div>
-                    </div>
-                </div>
-
-                <!-- Borrower's Name  |  Promissory Note No / Trade Reference No -->
-                <div class="fr">
-                    <div class="fg">
-                        <div class="fl">Borrower's Name</div>
-                        <div class="fv empty">&nbsp;</div>
-                    </div>
-                    <div class="fg">
-                        <div class="fl">Promissory Note No. / Trade Reference No.</div>
-                        <div class="fv empty">&nbsp;</div>
-                    </div>
-                </div>
-
-            </div><!-- /.fc -->
-        </div><!-- /.lp-body -->
-
-        <div class="lp-footer">
-            This serves as your receipt when machine validated.
-        </div>
-
-    </div><!-- /.lp -->
-
-    <!-- ============ RIGHT PANEL ============ -->
-    <div class="rp">
-
-        <div class="rp-date">
-            <span class="rp-date-label">Date</span>
-            <div class="rp-date-val"><?= $e(date('m/d/Y')) ?></div>
-        </div>
-
-        <div class="rp-note">Use separate slip(s) for each type of transaction.</div>
-
-        <table class="dt">
-            <thead>
-                <tr>
-                    <th>Denomination</th>
-                    <th>Pieces</th>
-                    <th>Amount</th>
-                </tr>
-            </thead>
-            <tbody>
-                <!-- First row: payroll deposit amount -->
-                <tr>
-                    <td style="font-size:7pt;color:#1a56a0;font-weight:600">Payroll</td>
-                    <td class="pc">1</td>
-                    <td class="am" style="font-weight:700">₱ <?= $e($netPay) ?></td>
-                </tr>
-                <!-- Remaining rows blank for teller use -->
-                <?php for ($i = 0; $i < 6; $i++): ?>
-                <tr>
-                    <td>&nbsp;</td>
-                    <td class="pc">&nbsp;</td>
-                    <td class="am">&nbsp;</td>
-                </tr>
-                <?php endfor; ?>
-            </tbody>
-            <tfoot>
-                <tr>
-                    <td colspan="2" class="tl">Total Amount</td>
-                    <td class="ta">₱ <?= $e($netPay) ?></td>
-                </tr>
-            </tfoot>
-        </table>
-
-    </div><!-- /.rp -->
+    <div class="d row"   style="left:127.5mm;top:22.1mm;width:30mm">Payroll</div>
+    <div class="d row c" style="left:158.2mm;top:22.1mm;width:15.6mm">1</div>
+    <div class="d row r" style="left:174.5mm;top:22.1mm;width:30mm">₱ <?= $e($netPay) ?></div>
+    <div class="d tot"   style="left:174.5mm;top:79.8mm;width:30mm">₱ <?= $e($netPay) ?></div>
 
 </div><!-- /.slip -->
 <?php endforeach; ?>

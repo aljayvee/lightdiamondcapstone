@@ -23,11 +23,17 @@ use Wbpms\Infrastructure\Database\Connection;
 final class AuthService
 {
     private Connection $connection;
+    private ?string $lastFailureMessage = null;
 
     public function __construct(
         Connection $connection
     ) {
         $this->connection = $connection;
+    }
+
+    public function lastFailureMessage(): ?string
+    {
+        return $this->lastFailureMessage;
     }
 
     /**
@@ -41,7 +47,7 @@ final class AuthService
      * @param  string $requestId         Request UUID for audit correlation
      * @param  string $ipAddress         Remote IP address
      * @param  string $userAgent         HTTP user agent string
-     * @return array{user_id: int, username: string, role_name: string, employee_id: int|null, requires_password_change: bool}|null
+     * @return array{user_id: int, username: string, role_name: string, employee_id: int|null, requires_password_change: bool, requires_email_otp: bool}|null
      */
     public function attemptLogin(
         string $email,
@@ -50,12 +56,15 @@ final class AuthService
         string $ipAddress = '',
         string $userAgent = ''
     ): ?array {
+        $this->lastFailureMessage = null;
         $pdo = $this->connection->pdo();
 
         // Fetch user + role by email (account_email column)
         $stmt = $pdo->prepare(
             'SELECT u.user_id, u.username, u.account_email, u.password_hash, u.status,
-                    u.employee_id, u.requires_password_change, r.role_name
+                    u.employee_id, u.requires_password_change,
+                    u.email_verified_at, u.email_verification_token_hash,
+                    r.role_name
              FROM users u
              JOIN role r ON r.role_id = u.role_id
              WHERE u.account_email = :email
@@ -111,6 +120,10 @@ final class AuthService
         }
 
         if ($user['status'] !== 'Active') {
+            $this->lastFailureMessage = ((string) $user['status'] === 'Archived')
+                ? AuthenticationPolicy::ARCHIVED_ACCOUNT_MESSAGE
+                : AuthenticationPolicy::INACTIVE_ACCOUNT_MESSAGE;
+
             $this->writeAudit(
                 $pdo,
                 null,
@@ -123,6 +136,29 @@ final class AuthService
                 $ipAddress,
                 $userAgent,
                 'Login failed: invalid credentials or inactive account.',
+                $actionAt
+            );
+
+            return null;
+        }
+
+        if (array_key_exists('email_verified_at', $user)
+            && $user['email_verified_at'] === null
+            && !empty($user['email_verification_token_hash'])) {
+            $this->lastFailureMessage = AuthenticationPolicy::UNVERIFIED_EMAIL_MESSAGE;
+
+            $this->writeAudit(
+                $pdo,
+                (int) $user['user_id'],
+                'login_failure',
+                'login_attempt',
+                'users',
+                (int) $user['user_id'],
+                null,
+                $requestId,
+                $ipAddress,
+                $userAgent,
+                'Login blocked: email address not yet verified.',
                 $actionAt
             );
 
@@ -158,7 +194,19 @@ final class AuthService
             'role_name'                => (string) $user['role_name'],
             'employee_id'              => $employeeId,
             'requires_password_change' => (bool)   ($user['requires_password_change'] ?? false),
+            'requires_email_otp'       => self::requiresEmailOtp($user),
         ];
+    }
+
+    /**
+     * First-login email OTP is required while the account email is unverified.
+     * Rows without the column (pre-migration, test doubles) never require it.
+     *
+     * @param array<string, mixed> $user
+     */
+    private static function requiresEmailOtp(array $user): bool
+    {
+        return array_key_exists('email_verified_at', $user) && $user['email_verified_at'] === null;
     }
 
     /**
@@ -168,13 +216,13 @@ final class AuthService
      * calls this on every protected request so status, role, and link changes
      * take effect immediately.
      *
-     * @return array{user_id:int, username:string, role_name:string, employee_id:int|null, requires_password_change:bool, status:string}|null
+     * @return array{user_id:int, username:string, role_name:string, employee_id:int|null, requires_password_change:bool, requires_email_otp:bool, status:string}|null
      */
     public function currentIdentity(int $userId): ?array
     {
         $stmt = $this->connection->pdo()->prepare(
             "SELECT u.user_id, u.username, u.employee_id,
-                    u.requires_password_change, u.status, r.role_name
+                    u.requires_password_change, u.email_verified_at, u.status, r.role_name
                FROM users u
                JOIN role r ON r.role_id = u.role_id
               WHERE u.user_id = :id
@@ -193,6 +241,7 @@ final class AuthService
             'role_name'                => (string) $user['role_name'],
             'employee_id'              => $user['employee_id'] !== null ? (int) $user['employee_id'] : null,
             'requires_password_change' => (bool) ($user['requires_password_change'] ?? false),
+            'requires_email_otp'       => self::requiresEmailOtp($user),
             'status'                   => (string) $user['status'],
         ];
     }

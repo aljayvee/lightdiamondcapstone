@@ -54,15 +54,15 @@ foreach ($payslips as $ps) {
         <p>Detailed payslip per employee — earnings, deductions, and net pay.</p>
     </div>
     <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
-        <a href="<?= $base ?>/hr/reports" class="btn btn-secondary">← Back</a>
+        <a href="<?= $base ?>/hr/reports" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back</a>
         <a href="<?= $base ?>/hr/reports/payslips/bulk<?= $bulkQuery !== '' ? '?' . Formatter::escape($bulkQuery) : '' ?>"
-           class="btn btn-secondary" target="_blank" rel="noopener">🖨 Print 1/4 Sheet</a>
+           class="btn btn-secondary" target="_blank" rel="noopener"><?= \Wbpms\Http\View\Icon::svg('printer') ?> Print 1/4 Sheet</a>
         <a href="<?= $base ?>/hr/reports/export?<?= Formatter::escape($exportQuery) ?>"
-           class="btn btn-secondary" target="_blank" rel="noopener">🖨 Print</a>
+           class="btn btn-secondary" target="_blank" rel="noopener"><?= \Wbpms\Http\View\Icon::svg('printer') ?> Print</a>
         <a href="<?= $base ?>/hr/reports/export?<?= Formatter::escape($exportQuery) ?>&amp;format=pdf"
-           class="btn btn-secondary" target="_blank" rel="noopener">⬇ PDF</a>
+           class="btn btn-secondary" target="_blank" rel="noopener"><?= \Wbpms\Http\View\Icon::svg('file-down') ?> PDF</a>
         <a href="<?= $base ?>/hr/reports/export?<?= Formatter::escape($exportQuery) ?>&amp;format=csv"
-           class="btn btn-primary">⬇ CSV</a>
+           class="btn btn-primary"><?= \Wbpms\Http\View\Icon::svg('sheet') ?> CSV</a>
     </div>
 </div>
 
@@ -78,7 +78,7 @@ foreach ($payslips as $ps) {
                 <?php foreach ($periods as $p): ?>
                 <option value="<?= (int) $p['payroll_period_id'] ?>"
                     <?= (int) $p['payroll_period_id'] === (int) ($filters['payroll_period_id'] ?? 0) ? 'selected' : '' ?>>
-                    <?= Formatter::escape($p['period_start'] . ' – ' . $p['period_end']) ?>
+                    <?= Formatter::date((string) $p['period_start']) . ' – ' . Formatter::date((string) $p['period_end']) ?>
                 </option>
                 <?php endforeach; ?>
             </select>
@@ -106,7 +106,7 @@ foreach ($payslips as $ps) {
                    style="padding:.45rem .7rem;border:1px solid #d1d5db;border-radius:4px;font-size:.875rem;width:180px">
         </div>
 
-        <button type="submit" class="btn btn-primary">Filter</button>
+        <button type="submit" class="btn btn-primary">Apply Filters</button>
         <a href="<?= $base ?>/hr/reports/payslips" class="btn btn-secondary">Clear</a>
     </form>
 </div>
@@ -118,7 +118,7 @@ foreach ($payslips as $ps) {
 <?php else: ?>
 
 <!-- Report totals summary -->
-<div class="cards three" style="margin-bottom:1.25rem">
+<div class="cards four" style="margin-bottom:1.25rem">
     <div class="stat">
         <strong><?= count($payslips) ?></strong>
         <span>Payslips</span>
@@ -128,7 +128,11 @@ foreach ($payslips as $ps) {
         <span>Total Gross Pay</span>
     </div>
     <div class="stat">
-        <strong>₱<?= number_format($totalNet, 2) ?></strong>
+        <strong style="color:#dc2626">₱<?= number_format($totalDeductions, 2) ?></strong>
+        <span>Total Deductions</span>
+    </div>
+    <div class="stat">
+        <strong style="color:#15803d">₱<?= number_format($totalNet, 2) ?></strong>
         <span>Total Net Pay</span>
     </div>
 </div>
@@ -163,7 +167,7 @@ foreach ($payslips as $ps) {
                 <div style="font-weight:600"><?= Formatter::escape($period) ?></div>
                 <div style="font-size:.8rem;color:#6b7280">
                     Branch: <?= Formatter::escape($branchName) ?>
-                    <?php if ($payDate !== ''): ?> &middot; Pay date: <?= Formatter::escape($payDate) ?><?php endif; ?>
+                    <?php if ($payDate !== ''): ?> &middot; Pay date: <?= Formatter::date($payDate) ?><?php endif; ?>
                 </div>
             </div>
         </div>

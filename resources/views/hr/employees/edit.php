@@ -1,5 +1,6 @@
 <?php
 
+declare(strict_types=1);
 
 use Wbpms\Http\View\Formatter;
 
@@ -33,8 +34,15 @@ $branches ??= [];
 $schedules ??= [];
 $devices  ??= [];
 $positions ??= [];
+$minimumDailyWage ??= 460.00;
+$nextEmployeeNumber ??= '';
 $errors   ??= [];
 $csrf     ??= '';
+
+$manilaToday = new \DateTimeImmutable('today', new \DateTimeZone('Asia/Manila'));
+$minBirthdate = $manilaToday->modify('-100 years')->format('Y-m-d');
+$maxBirthdate = $manilaToday->modify('-18 years')->format('Y-m-d');
+$maxEffectiveDate = $manilaToday->modify('+30 days')->format('Y-m-d');
 
 $isEdit  = $employee !== null;
 $title   = $isEdit ? 'Edit Employee' : 'Add Employee';
@@ -53,7 +61,7 @@ $err = static fn(string $key): string => isset($errors[$key])
 
 <div class="page-header">
     <h1><?= $title ?></h1>
-    <a href="<?= $base ?>/hr/employees" class="btn btn-secondary">← Back to Employees</a>
+    <a href="<?= $base ?>/hr/employees" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Employees</a>
 </div>
 
 <div class="card" style="max-width:720px">
@@ -66,7 +74,7 @@ $err = static fn(string $key): string => isset($errors[$key])
         <h2 style="margin-top:0">Personal Information</h2>
         <div class="form-row-3">
             <div class="form-group">
-                <label for="first_name">First name <span style="color:#dc2626">*</span></label>
+                <label for="first_name">First Name <span style="color:#dc2626">*</span></label>
                 <input type="text" id="first_name" name="first_name"
                     value="<?= $v('first_name') ?>"
                     maxlength="50"
@@ -78,7 +86,7 @@ $err = static fn(string $key): string => isset($errors[$key])
                 <?= $err('first_name') ?>
             </div>
             <div class="form-group">
-                <label for="middle_name">Middle name</label>
+                <label for="middle_name">Middle Name</label>
                 <input type="text" id="middle_name" name="middle_name"
                     value="<?= $v('middle_name') ?? $v('middle_initial') ?>"
                     maxlength="50"
@@ -88,7 +96,7 @@ $err = static fn(string $key): string => isset($errors[$key])
                 <?= $err('middle_name') ?>
             </div>
             <div class="form-group">
-                <label for="last_name">Last name <span style="color:#dc2626">*</span></label>
+                <label for="last_name">Last Name <span style="color:#dc2626">*</span></label>
                 <input type="text" id="last_name" name="last_name"
                     value="<?= $v('last_name') ?>"
                     maxlength="50"
@@ -106,13 +114,18 @@ $err = static fn(string $key): string => isset($errors[$key])
                 <label for="birthdate">Birthdate <span style="color:#dc2626">*</span></label>
                 <input type="date" id="birthdate" name="birthdate"
                     value="<?= $v('birthdate') ?>"
+                    min="<?= Formatter::escape($minBirthdate) ?>"
+                    max="<?= Formatter::escape($maxBirthdate) ?>"
                     required
                     data-msg-required="Birthdate is required."
+                    data-msg-max="Employee is under age. Employees must be at least 18 years old (born on or before <?= Formatter::escape(Formatter::date($maxBirthdate)) ?>)."
+                    data-msg-min="Employee age cannot exceed 100 years. Please check the birthdate year."
                     class="<?= isset($errors['birthdate']) ? 'is-invalid' : '' ?>">
+                <small class="muted">Must be 18 to 100 years old.</small>
                 <?= $err('birthdate') ?>
             </div>
             <div class="form-group">
-                <label for="contact_number">Contact number <span style="color:#dc2626">*</span></label>
+                <label for="contact_number">Contact Number <span style="color:#dc2626">*</span></label>
                 <input type="text" id="contact_number" name="contact_number"
                     value="<?= $v('contact_number') ?>"
                     placeholder="09XXXXXXXXX"
@@ -141,9 +154,9 @@ $err = static fn(string $key): string => isset($errors[$key])
 
         <div class="form-row">
             <div class="form-group">
-                <label for="position">Position / Job title <span style="color:#dc2626">*</span></label>
+                <label for="position">Job Position<span style="color:#dc2626">*</span></label>
                 <select id="position_select" name="position"
-                        onchange="syncPositionInput(this)"
+                        onchange="syncPositionInput(this, true)"
                         required
                         data-msg-required="Position / Job title is required."
                         class="<?= isset($errors['position']) ? 'is-invalid' : '' ?>">
@@ -154,8 +167,13 @@ $err = static fn(string $key): string => isset($errors[$key])
                     foreach ($positions ?? [] as $pos):
                         $selected = ($pos['name'] === $currentPosition);
                         if ($selected) $matched = true;
+                        $reqReg = (int) ($pos['requires_regular'] ?? 0);
+                        $defRate = ($pos['default_daily_rate'] ?? null) !== null
+                            ? number_format((float) $pos['default_daily_rate'], 2, '.', '') : '';
                     ?>
                     <option value="<?= Formatter::escape($pos['name']) ?>"
+                            data-requires-regular="<?= $reqReg ?>"
+                            data-default-rate="<?= Formatter::escape($defRate) ?>"
                             <?= $selected ? 'selected' : '' ?>>
                         <?= Formatter::escape($pos['name']) ?>
                         <?php if ($pos['department']): ?>
@@ -174,21 +192,70 @@ $err = static fn(string $key): string => isset($errors[$key])
                        style="margin-top:.4rem;<?= (!$matched && $currentPosition !== '') ? '' : 'display:none' ?>">
                 <small class="muted">
                     Can't find the title?
-                    <a href="<?= $base ?>/hr/settings/positions" target="_blank">Add it in Settings →</a>
+                    <a href="<?= $base ?>/hr/settings/positions" target="_blank">Add it in Settings <?= \Wbpms\Http\View\Icon::svg('chevron-right') ?></a>
                 </small>
                 <?= $err('position') ?>
             </div>
             <div class="form-group">
-                <label for="employee_type">Employee type <span style="color:#dc2626">*</span></label>
-                <select id="employee_type" name="employee_type">
-                    <option value="Regular"      <?= $sel($employee['employee_type'] ?? 'Regular', 'Regular') ?>>Regular</option>
-                    <option value="Contractual"  <?= $sel($employee['employee_type'] ?? '',        'Contractual') ?>>Contractual</option>
+                <label for="employee_type">Employee Type <span style="color:#dc2626">*</span></label>
+                <?php $currentEmployeeType = (string) ($employee['employee_type'] ?? ($_POST['employee_type'] ?? 'Regular')); ?>
+                <select id="employee_type" name="employee_type" onchange="syncContractReview()" class="<?= isset($errors['employee_type']) ? 'is-invalid' : '' ?>">
+                    <option value="Regular"      <?= $sel($currentEmployeeType, 'Regular') ?>>Regular</option>
+                    <option value="Probationary" <?= $sel($currentEmployeeType, 'Probationary') ?>>Probationary</option>
+                    <option value="Contractual"  <?= $sel($currentEmployeeType, 'Contractual') ?>>Contractual</option>
                 </select>
+                <?= $err('employee_type') ?>
             </div>
         </div>
 
+        <?php
+        // Contract review date: required for Contractual / Probationary. The HR
+        // Head's bell lists the employee from 14 days before this date until
+        // HR changes the type to Regular or sets a new date. [EMP-024]
+        $needsReview = \Wbpms\Domain\Employee\ContractReviewPolicy::needsReview($currentEmployeeType);
+        $reviewValue = (string) ($_POST['contract_review_date'] ?? ($employee['contract_review_date'] ?? ''));
+        $reviewStart = $isEdit ? (string) ($employee['hire_date'] ?? '') : '';
+        ?>
+        <div class="form-row" id="contract_review_row" style="<?= $needsReview ? '' : 'display:none' ?>">
+            <div class="form-group">
+                <label for="contract_review_date">Contract Review Date <span style="color:#dc2626">*</span></label>
+                <input type="date" id="contract_review_date" name="contract_review_date"
+                    value="<?= Formatter::escape($reviewValue) ?>"
+                    data-start="<?= Formatter::escape($reviewStart) ?>"
+                    <?= $needsReview ? 'required' : 'disabled' ?>
+                    data-msg-required="Contract review date is required for Contractual and Probationary employees."
+                    class="<?= isset($errors['contract_review_date']) ? 'is-invalid' : '' ?>">
+                <small class="muted">The date HR will review this employee's contract for renewal or regularisation.
+                    The HR Head is notified <?= \Wbpms\Domain\Employee\ContractReviewPolicy::DUE_SOON_DAYS ?> days before.
+                    Changing the type to Regular clears it.</small>
+                <?= $err('contract_review_date') ?>
+            </div>
+        </div>
         <script>
-        function syncPositionInput(sel) {
+        function syncContractReview() {
+            var type  = document.getElementById('employee_type');
+            var row   = document.getElementById('contract_review_row');
+            var input = document.getElementById('contract_review_date');
+            if (!type || !row || !input) { return; }
+            var needs = type.value === 'Contractual' || type.value === 'Probationary';
+            row.style.display = needs ? '' : 'none';
+            input.disabled = !needs;
+            input.required = needs;
+            if (needs && input.value === '') {
+                // Pre-fill start date + 6 months; HR can change it.
+                var startEl = document.getElementById('effective_from');
+                var start = input.getAttribute('data-start') || (startEl ? startEl.value : '');
+                if (/^\d{4}-\d{2}-\d{2}$/.test(start)) {
+                    var p = start.split('-');
+                    var d = new Date(Date.UTC(+p[0], +p[1] - 1 + 6, +p[2]));
+                    input.value = d.toISOString().slice(0, 10);
+                }
+            }
+        }
+        </script>
+
+        <script>
+        function syncPositionInput(sel, isUserChange) {
             var other = document.getElementById('position_other');
             if (sel.value === '__other__') {
                 other.style.display = '';
@@ -204,29 +271,69 @@ $err = static fn(string $key): string => isset($errors[$key])
                 other.removeAttribute('required');
                 sel.name = 'position';
                 sel.required = true;
+
+                if (isUserChange && sel.selectedIndex >= 0) {
+                    var opt = sel.options[sel.selectedIndex];
+                    if (typeof wbFillDefaultRate === 'function') { wbFillDefaultRate(opt); }
+                    var reqReg = opt ? opt.getAttribute('data-requires-regular') : '0';
+                    var typeSel = document.getElementById('employee_type');
+                    if (typeSel && reqReg === '1') {
+                        typeSel.value = 'Regular';
+                        if (typeof syncContractReview === 'function') { syncContractReview(); }
+                    }
+                }
             }
         }
         // Run on page load to handle the pre-selected "Other" state
-        (function(){ syncPositionInput(document.getElementById('position_select')); })();
+        (function(){ syncPositionInput(document.getElementById('position_select'), false); })();
         </script>
 
         <div class="form-row">
             <div class="form-group">
-                <label for="employee_number">Employee number <span style="color:#dc2626">*</span></label>
+                <label for="employee_number">Employee No.</label>
+                <?php if ($isEdit): ?>
                 <input type="text" id="employee_number" name="employee_number"
                     value="<?= $v('employee_number') ?>"
-                    maxlength="30"
-                    <?= !$isEdit ? 'required' : '' ?>
-                    <?= $isEdit ? 'readonly style="background:#f3f4f6"' : '' ?>
-                    class="<?= isset($errors['employee_number']) ? 'is-invalid' : '' ?>">
+                    readonly style="background:#f3f4f6">
+                <small class="muted">Assigned when the employee was added; cannot be changed.</small>
+                <?php else: ?>
+                <?php /* Auto-generated by store() (EMP-001, EMP-002, ...). Display only, never posted. */ ?>
+                <input type="text" id="employee_number"
+                    value=""
+                    data-next="<?= Formatter::escape((string) $nextEmployeeNumber) ?>"
+                    readonly tabindex="-1" aria-readonly="true"
+                    placeholder="Generated after first and last name"
+                    style="background:#f3f4f6">
+                <small class="muted">Generated automatically once the first and last name are filled in. The final number is confirmed when you save.</small>
+                <script>
+                // Show the next number once both names are filled in.
+                document.addEventListener('DOMContentLoaded', function () {
+                    var first = document.getElementById('first_name');
+                    var last  = document.getElementById('last_name');
+                    var num   = document.getElementById('employee_number');
+                    if (!first || !last || !num) { return; }
+                    var sync = function () {
+                        num.value = (first.value.trim() !== '' && last.value.trim() !== '') ? num.dataset.next : '';
+                    };
+                    first.addEventListener('input', sync);
+                    last.addEventListener('input', sync);
+                    sync();
+                });
+                </script>
+                <?php endif; ?>
                 <?= $err('employee_number') ?>
             </div>
             <div class="form-group">
-                <label for="effective_from"><?= $isEdit ? 'Hire date' : 'Effective from' ?> <span style="color:#dc2626">*</span></label>
+                <label for="effective_from"><?= $isEdit ? 'Hire date' : 'Effective from (Hire date)' ?> <span style="color:#dc2626">*</span></label>
                 <input type="date" id="effective_from" name="effective_from"
                     value="<?= $v('effective_from') ?>"
+                    onchange="if (typeof syncContractReview === 'function') { syncContractReview(); }"
+                    <?= !$isEdit ? 'required max="' . Formatter::escape($maxEffectiveDate) . '"' : '' ?>
                     class="<?= isset($errors['effective_from']) ? 'is-invalid' : '' ?>"
                     <?= $isEdit ? 'readonly style="background:#f3f4f6"' : '' ?>>
+                <?php if (!$isEdit): ?>
+                <small class="muted">Must be on or before employee's first biometric punch date so punches match.</small>
+                <?php endif; ?>
                 <?= $err('effective_from') ?>
             </div>
         </div>
@@ -234,7 +341,7 @@ $err = static fn(string $key): string => isset($errors[$key])
         <h2>Government IDs</h2>
         <div class="form-row-3">
             <div class="form-group">
-                <label for="sss_number">SSS number</label>
+                <label for="sss_number">SSS Number</label>
                 <input type="text" id="sss_number" name="sss_number"
                     value="<?= $v('sss_number') ?>"
                     placeholder="XX-XXXXXXX-X"
@@ -246,7 +353,7 @@ $err = static fn(string $key): string => isset($errors[$key])
                 <?= $err('sss_number') ?>
             </div>
             <div class="form-group">
-                <label for="philhealth_number">PhilHealth number</label>
+                <label for="philhealth_number">PhilHealth Number</label>
                 <input type="text" id="philhealth_number" name="philhealth_number"
                     value="<?= $v('philhealth_number') ?>"
                     placeholder="12-digit number"
@@ -258,7 +365,7 @@ $err = static fn(string $key): string => isset($errors[$key])
                 <?= $err('philhealth_number') ?>
             </div>
             <div class="form-group">
-                <label for="pagibig_number">Pag-IBIG number</label>
+                <label for="pagibig_number">Pag-IBIG Number</label>
                 <input type="text" id="pagibig_number" name="pagibig_number"
                     value="<?= $v('pagibig_number') ?>"
                     placeholder="12-digit number"
@@ -318,7 +425,7 @@ $err = static fn(string $key): string => isset($errors[$key])
                 <?php endif; ?>
             </div>
             <div class="form-group">
-                <label for="schedule_id">Work schedule <span style="color:#dc2626">*</span></label>
+                <label for="schedule_id">Work Schedule <span style="color:#dc2626">*</span></label>
                 <select id="schedule_id" name="schedule_id"
                     required
                     class="<?= isset($errors['schedule_id']) ? 'is-invalid' : '' ?>">
@@ -336,19 +443,27 @@ $err = static fn(string $key): string => isset($errors[$key])
 
         <div class="form-row">
             <div class="form-group">
-                <label for="daily_rate">Daily rate (₱) <span style="color:#dc2626">*</span></label>
+                <label for="daily_rate">Daily Rate (₱) <span style="color:#dc2626">*</span></label>
                 <input type="number" id="daily_rate" name="daily_rate"
                     value="<?= $v('daily_rate') ?>"
-                    min="0.01" step="0.01"
+                    min="<?= Formatter::escape(number_format((float) $minimumDailyWage, 2, '.', '')) ?>"
+                    max="<?= Formatter::escape(number_format(\Wbpms\Http\Controllers\EmployeeController::MAX_DAILY_RATE, 2, '.', '')) ?>"
+                    step="0.01"
                     required
+                    data-msg-required="Daily rate is required."
+                    data-msg-min="Daily rate cannot be below the DOLE Region XII minimum daily wage (₱<?= Formatter::escape(number_format((float) $minimumDailyWage, 2)) ?>)."
+                    data-msg-max="Daily rate cannot exceed ₱<?= Formatter::escape(number_format(\Wbpms\Http\Controllers\EmployeeController::MAX_DAILY_RATE, 2)) ?>."
                     class="<?= isset($errors['daily_rate']) ? 'is-invalid' : '' ?>">
+                <small class="muted" id="daily_rate_hint" style="display:none"></small>
+                <small class="muted">Filled in from the position's default rate (set in Settings); change it if this employee's rate is different. DOLE Region XII minimum daily wage: ₱<?= Formatter::escape(number_format((float) $minimumDailyWage, 2)) ?></small>
                 <?= $err('daily_rate') ?>
+                <?php require __DIR__ . '/_default_rate_script.php'; ?>
             </div>
             <div class="form-group">
                 <label for="status">Status</label>
                 <select id="status" name="status">
                     <?php
-                    $currentStatus = strtolower((string) ($employee['status'] ?? 'active'));
+                    $currentStatus = strtolower((string) ($employee['status'] ?? ($_POST['status'] ?? 'active')));
                     ?>
                     <option value="active"   <?= $currentStatus === 'active'   ? 'selected' : '' ?>>Active</option>
                     <option value="inactive" <?= $currentStatus === 'inactive' ? 'selected' : '' ?>>Inactive</option>
@@ -359,7 +474,7 @@ $err = static fn(string $key): string => isset($errors[$key])
         <h2>Biometric Enrollment</h2>
         <div class="form-row">
             <div class="form-group">
-                <label for="device_id">Biometric device <?= !$isEdit ? '<span style="color:#dc2626">*</span>' : '' ?></label>
+                <label for="device_id">Biometric Device <?= !$isEdit ? '<span style="color:#dc2626">*</span>' : '' ?></label>
                 <select id="device_id" name="device_id"
                     <?= !$isEdit ? 'required' : '' ?>
                     class="<?= isset($errors['device_id']) ? 'is-invalid' : '' ?>">
@@ -377,12 +492,15 @@ $err = static fn(string $key): string => isset($errors[$key])
                 <?php endif; ?>
             </div>
             <div class="form-group">
-                <label for="enrollment_code">Enroll ID <?= !$isEdit ? '<span style="color:#dc2626">*</span>' : '' ?></label>
+                <label for="enrollment_code">Biometric Enroll ID <?= !$isEdit ? '<span style="color:#dc2626">*</span>' : '' ?></label>
                 <input type="text" id="enrollment_code" name="enrollment_code"
                     value="<?= $v('enrollment_code') ?>"
                     inputmode="numeric"
+                    pattern="\d{1,20}"
+                    placeholder="e.g. 2, 13, 21"
                     <?= !$isEdit ? 'required' : '' ?>
                     class="<?= isset($errors['enrollment_code']) ? 'is-invalid' : '' ?>">
+                <small class="muted">Digits-only Enroll ID shown in the biometric .xls workbook (e.g. <code>21</code> for Richie Tagaduar).</small>
                 <?= $err('enrollment_code') ?>
             </div>
         </div>
@@ -393,7 +511,7 @@ $err = static fn(string $key): string => isset($errors[$key])
         </div>
         <?php endif; ?>
 
-        <div style="display:flex;gap:.75rem;margin-top:1.25rem">
+        <div class="form-action-bar" style="display:flex;flex-wrap:wrap;gap:.75rem;margin-top:1.25rem">
             <button type="submit" class="btn btn-primary">
                 <?= $isEdit ? 'Save Changes' : 'Create Employee' ?>
             </button>
@@ -426,13 +544,16 @@ window.addEventListener('load', function () {
     var form = document.querySelector('form[data-validate]');
     var email = document.getElementById('email');
     if (!form || !email) return;
+    // Uses the shared on-page confirmation (assets/confirm-dialog.js): this
+    // listener runs before it, so the message carries the email typed now.
     form.addEventListener('submit', function (e) {
         if (e.defaultPrevented) return;
         var address = email.value.trim();
-        if (!window.confirm('Create this employee with the login email\n\n' + address + '\n\nIs this email address correct?')) {
-            e.preventDefault();
-            email.focus();
-        }
+        form.setAttribute('data-confirm', 'Create this employee with the login email\n\n' + address + '\n\nIs this email address correct?');
+        form.setAttribute('data-confirm-ok', 'Yes, create employee');
+    });
+    form.addEventListener('confirm:cancel', function () {
+        email.focus();
     });
 });
 </script>

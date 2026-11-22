@@ -36,8 +36,9 @@ final class DashboardController
             ->query("SELECT COUNT(*) FROM employee WHERE status = 'Active'")
             ->fetchColumn();
 
+        // Requests waiting for HR: new ones and ones the Owner returned (REQ003).
         $pendingRequests = (int) $pdo
-            ->query("SELECT COUNT(*) FROM request WHERE status = 'Pending'")
+            ->query("SELECT COUNT(*) FROM request WHERE status IN ('Pending', 'Returned')")
             ->fetchColumn();
 
         // Incomplete or multi-punch attendance requires HR review.
@@ -45,24 +46,30 @@ final class DashboardController
             ->query("SELECT COUNT(*) FROM attendance WHERE status IN ('Incomplete', 'ReviewRequired')")
             ->fetchColumn();
 
-        // Payroll runs in Draft or Computed state
-        $payrollDrafts = (int) $pdo
-            ->query("SELECT COUNT(*) FROM payroll_run WHERE status IN ('Draft','Computed')")
-            ->fetchColumn();
+        // Payroll runs HR still has to finish: not yet computed, computed but
+        // not submitted, or returned by the Owner for revision (REQ003). The
+        // old card counted only Draft/Computed and left returned runs out.
+        $payrollOpen = $pdo
+            ->query("SELECT COUNT(*) AS open_runs, COALESCE(SUM(status = 'Returned'), 0) AS returned_runs
+                       FROM payroll_run WHERE status IN ('Draft', 'Computed', 'Returned')")
+            ->fetch(PDO::FETCH_ASSOC);
+        $payrollDrafts   = (int) ($payrollOpen['open_runs'] ?? 0);
+        $payrollReturned = (int) ($payrollOpen['returned_runs'] ?? 0);
 
-        // Recent requests (last 10 pending)
-        // request_type.type_name is the actual column name (migration 004)
+        // Recent requests: the latest activity in any status, so an approved
+        // or cancelled request stays visible instead of the panel going empty
+        // (REQ003). request_type.type_name is the column (migration 004).
         $stmt = $pdo->query(
             "SELECT r.request_id AS id,
                     CONCAT(e.last_name, ', ', e.first_name) AS employee_name,
                     rt.type_name AS type,
                     r.submitted_at,
+                    COALESCE(r.updated_at, r.submitted_at) AS last_activity,
                     r.status
              FROM request r
              JOIN employee e    ON e.employee_id          = r.employee_id
              JOIN request_type rt ON rt.request_type_id   = r.request_type_id
-             WHERE r.status = 'Pending'
-             ORDER BY r.submitted_at DESC
+             ORDER BY COALESCE(r.updated_at, r.submitted_at) DESC, r.request_id DESC
              LIMIT 10"
         );
         $recentRequests = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -72,7 +79,7 @@ final class DashboardController
         $stmt = $pdo->query(
             "SELECT pr.payroll_run_id AS id,
                     b.branch_name,
-                    CONCAT(pp.period_start, ' – ', pp.period_end) AS period,
+                    CONCAT(DATE_FORMAT(pp.period_start, '%m/%d/%y'), ' – ', DATE_FORMAT(pp.period_end, '%m/%d/%y')) AS period,
                     pr.status,
                     (SELECT COUNT(*) FROM payroll p WHERE p.payroll_run_id = pr.payroll_run_id)
                         AS employee_count
@@ -106,6 +113,7 @@ final class DashboardController
             'pendingRequests'      => $pendingRequests,
             'incompleteAttendance' => $incompleteAttendance,
             'payrollDrafts'        => $payrollDrafts,
+            'payrollReturned'      => $payrollReturned,
             'recentRequests'       => $recentRequests,
             'payrollRuns'          => $payrollRuns,
             'incompleteAlerts'     => $incompleteAlerts,
@@ -142,7 +150,7 @@ final class DashboardController
         $stmt = $pdo->query(
             "SELECT pr.payroll_run_id AS id,
                     b.branch_name,
-                    CONCAT(pp.period_start, ' – ', pp.period_end) AS period,
+                    CONCAT(DATE_FORMAT(pp.period_start, '%m/%d/%y'), ' – ', DATE_FORMAT(pp.period_end, '%m/%d/%y')) AS period,
                     pr.status,
                     pr.submitted_at,
                     (SELECT COUNT(*) FROM payroll p WHERE p.payroll_run_id = pr.payroll_run_id)
@@ -159,9 +167,9 @@ final class DashboardController
         // Recently approved runs (last 5)
         $stmt = $pdo->query(
             "SELECT b.branch_name,
-                    CONCAT(pp.period_start, ' – ', pp.period_end) AS period,
-                    '0.00' AS gross_total,
-                    '0.00' AS net_total,
+                    CONCAT(DATE_FORMAT(pp.period_start, '%m/%d/%y'), ' – ', DATE_FORMAT(pp.period_end, '%m/%d/%y')) AS period,
+                    COALESCE(pr.gross_pay, 0.00) AS gross_total,
+                    COALESCE(pr.net_pay, 0.00)   AS net_total,
                     pr.reviewed_at AS approved_at
              FROM payroll_run pr
              JOIN branch b         ON b.branch_id          = pr.branch_id

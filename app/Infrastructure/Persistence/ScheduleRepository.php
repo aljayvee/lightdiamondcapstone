@@ -43,10 +43,10 @@ final class ScheduleRepository extends AbstractRepository
         return $row !== false ? $row : null;
     }
 
-    /** Whether another schedule template already uses this name (uq_ws_name). */
+    /** Whether another schedule template already uses this name (case- and whitespace-normalized, uq_ws_name). */
     public function nameExists(string $name, ?int $excludeScheduleId = null): bool
     {
-        $sql = 'SELECT 1 FROM work_schedule WHERE schedule_name = :name';
+        $sql = "SELECT 1 FROM work_schedule WHERE LOWER(REPLACE(TRIM(schedule_name), ' ', '')) = LOWER(REPLACE(TRIM(:name), ' ', ''))";
         $params = [':name' => $name];
         if ($excludeScheduleId !== null) {
             $sql .= ' AND schedule_id <> :exclude_id';
@@ -237,6 +237,23 @@ final class ScheduleRepository extends AbstractRepository
              FROM employee WHERE status = 'Active' ORDER BY last_name ASC, first_name ASC"
         );
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * True when the employee exists and is Active — the same set the Assign
+     * Schedule dropdown offers (employeeList()).
+     */
+    public function isActiveEmployee(int $employeeId): bool
+    {
+        if ($employeeId <= 0) {
+            return false;
+        }
+        $stmt = $this->pdo()->prepare(
+            "SELECT 1 FROM employee WHERE employee_id = :employee_id AND status = 'Active' LIMIT 1"
+        );
+        $stmt->execute([':employee_id' => $employeeId]);
+
+        return $stmt->fetchColumn() !== false;
     }
 
     /**

@@ -55,7 +55,7 @@ $reqStatusBadge = static function (string $status): string {
     <div class="stat-card">
         <div class="stat-label">Pending Requests</div>
         <div class="stat-value" style="<?= $pendingRequests > 0 ? 'color:#b45309' : '' ?>"><?= $pendingRequests ?></div>
-        <div class="stat-sub"><a href="<?= $base ?>/employee/requests">View →</a></div>
+        <div class="stat-sub"><a href="<?= $base ?>/employee/requests">View <?= \Wbpms\Http\View\Icon::svg('chevron-right') ?></a></div>
     </div>
 </div>
 
@@ -115,7 +115,7 @@ $reqStatusBadge = static function (string $status): string {
             <tbody>
             <?php foreach ($recentRequests as $req): ?>
             <tr>
-                <td><?= Formatter::escape($req['type']) ?></td>
+                <td><?= Formatter::escape(Formatter::label($req['type'])) ?></td>
                 <td><?= Formatter::date($req['submitted_at']) ?></td>
                 <td><?= $reqStatusBadge($req['status']) ?></td>
             </tr>

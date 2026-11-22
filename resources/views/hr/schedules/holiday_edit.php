@@ -11,7 +11,7 @@ $id = (int) $holiday['holiday_id'];
 
 <div class="page-header">
     <h1>Edit Holiday</h1>
-    <a href="<?= $base ?>/hr/schedules/holidays" class="btn btn-secondary">← Holiday Calendar</a>
+    <a href="<?= $base ?>/hr/schedules/holidays" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Holiday Calendar</a>
 </div>
 
 <?php if (!empty($errors)): ?>

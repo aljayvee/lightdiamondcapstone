@@ -20,9 +20,9 @@ $filters      ??= [];
 $base         ??= '';
 
 $typeIcons = [
-    'Leave'       => '🏖',
-    'Overtime'    => '⏰',
-    'CashAdvance' => '💵',
+    'Leave'       => 'leaf',
+    'Overtime'    => 'clock',
+    'CashAdvance' => 'banknote',
 ];
 ?>
 
@@ -31,7 +31,7 @@ $typeIcons = [
         <h1>Request Approvals</h1>
         <p>Review and act on employee requests, and see your full approval history.</p>
     </div>
-    <a href="<?= $base ?>/owner/requests/cash-advance-tracker" class="btn btn-secondary">💵 Cash Advance Balances</a>
+    <a href="<?= $base ?>/owner/requests/cash-advance-tracker" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('banknote') ?> Cash Advance Balances</a>
 </div>
 
 <!-- Filter bar -->
@@ -43,7 +43,7 @@ $typeIcons = [
                 <option value="">All types</option>
                 <?php foreach ($requestTypes as $rt): ?>
                 <option value="<?= (int) $rt['request_type_id'] ?>" <?= (int) ($filters['type_id'] ?? 0) === (int) $rt['request_type_id'] ? 'selected' : '' ?>>
-                    <?= Formatter::escape((string) $rt['type_name']) ?>
+                    <?= Formatter::escape(Formatter::label((string) $rt['type_name'])) ?>
                 </option>
                 <?php endforeach; ?>
             </select>
@@ -116,8 +116,8 @@ $typeIcons = [
                 <small style="color:#6b7280"><?= Formatter::escape((string) $r['employee_number']) ?></small>
             </td>
             <td>
-                <?= $typeIcons[$r['type_name']] ?? '' ?>
-                <?= Formatter::escape((string) $r['type_name']) ?>
+                <?= isset($typeIcons[$r['type_name']]) ? \Wbpms\Http\View\Icon::svg($typeIcons[$r['type_name']]) : '' ?>
+                <?= Formatter::escape(Formatter::label((string) $r['type_name'])) ?>
             </td>
             <td><span class="badge <?= $statusBadge ?>"><?= Formatter::escape((string) $r['status']) ?></span></td>
             <td style="white-space:nowrap;font-size:.85rem"><?= Formatter::date($r['submitted_at']) ?></td>
@@ -128,7 +128,7 @@ $typeIcons = [
             <td style="white-space:nowrap">
                 <a href="<?= $base ?>/owner/requests/<?= (int) $r['request_id'] ?>"
                    class="btn btn-secondary" style="font-size:.8rem;padding:.3rem .75rem">
-                    Review →
+                    Review <?= \Wbpms\Http\View\Icon::svg('chevron-right') ?>
                 </a>
             </td>
         </tr>
@@ -176,8 +176,8 @@ $typeIcons = [
                 <small style="color:#6b7280"><?= Formatter::escape((string) $r['employee_number']) ?></small>
             </td>
             <td>
-                <?= $typeIcons[$r['type_name']] ?? '' ?>
-                <?= Formatter::escape((string) $r['type_name']) ?>
+                <?= isset($typeIcons[$r['type_name']]) ? \Wbpms\Http\View\Icon::svg($typeIcons[$r['type_name']]) : '' ?>
+                <?= Formatter::escape(Formatter::label((string) $r['type_name'])) ?>
             </td>
             <td>
                 <span class="badge <?= $badgeClass ?>">
@@ -194,7 +194,7 @@ $typeIcons = [
             <td style="white-space:nowrap">
                 <a href="<?= $base ?>/owner/requests/<?= (int) $r['request_id'] ?>"
                    class="btn btn-secondary btn-sm">
-                    View →
+                    View <?= \Wbpms\Http\View\Icon::svg('chevron-right') ?>
                 </a>
             </td>
         </tr>

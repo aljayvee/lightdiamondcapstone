@@ -8,6 +8,7 @@ use RuntimeException;
 use Wbpms\Application\SalaryService;
 use Wbpms\Http\Middleware\AuthMiddleware;
 use Wbpms\Http\View\ViewRenderer;
+use Wbpms\Http\View\UserMessage;
 use Wbpms\Infrastructure\Database\Connection;
 
 /**
@@ -73,14 +74,17 @@ final class SalaryController
     /** @param array<string, string> $params */
     public function create(array $params = []): void
     {
-        $employees = $this->makeService()->employeeList();
+        $service   = $this->makeService();
+        $employees = $service->employeeList();
 
         ViewRenderer::render('hr/salary/form', [
-            'salary'    => null,
-            'employees' => $employees,
-            'errors'    => [],
-            'formTitle' => 'Add Salary Record',
-            'formAction'=> '/hr/salary',
+            'salary'           => null,
+            'employees'        => $employees,
+            'minimumDailyWage' => $service->activeMinimumDailyWage(460.00),
+            'activeStarts'     => $service->activeStartDates(),
+            'errors'           => [],
+            'formTitle'        => 'Add Salary Record',
+            'formAction'       => '/hr/salary',
         ], 'Add Salary Record');
     }
 
@@ -102,12 +106,14 @@ final class SalaryController
         } catch (RuntimeException $e) {
             $employees = $service->employeeList();
             ViewRenderer::render('hr/salary/form', [
-                'salary'    => null,
-                'employees' => $employees,
-                'errors'    => [$e->getMessage()],
-                'formTitle' => 'Add Salary Record',
-                'formAction'=> '/hr/salary',
-                'old'       => $data,
+                'salary'           => null,
+                'employees'        => $employees,
+                'minimumDailyWage' => $service->activeMinimumDailyWage(460.00),
+                'activeStarts'     => $service->activeStartDates(),
+                'errors'           => [UserMessage::from($e)],
+                'formTitle'        => 'Add Salary Record',
+                'formAction'       => '/hr/salary',
+                'old'              => $data,
             ], 'Add Salary Record');
         }
     }
@@ -126,7 +132,7 @@ final class SalaryController
             $salary = $service->findOrFail($id);
         } catch (RuntimeException) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
@@ -141,12 +147,14 @@ final class SalaryController
         $historyRows = $history->fetchAll();
 
         ViewRenderer::render('hr/salary/form', [
-            'salary'     => $salary,
-            'employees'  => $employees,
-            'history'    => $historyRows,
-            'errors'     => [],
-            'formTitle'  => 'Update Salary Rate',
-            'formAction' => '/hr/salary/' . $id,
+            'salary'           => $salary,
+            'employees'        => $employees,
+            'history'          => $historyRows,
+            'minimumDailyWage' => $service->activeMinimumDailyWage(460.00),
+            'activeStarts'     => $service->activeStartDates(),
+            'errors'           => [],
+            'formTitle'        => 'Update Salary Rate',
+            'formAction'       => '/hr/salary/' . $id,
         ], 'Edit Salary');
     }
 
@@ -174,12 +182,14 @@ final class SalaryController
             }
             $employees = $service->employeeList();
             ViewRenderer::render('hr/salary/form', [
-                'salary'     => $salary,
-                'employees'  => $employees,
-                'errors'     => [$e->getMessage()],
-                'formTitle'  => 'Update Salary Rate',
-                'formAction' => '/hr/salary/' . $id,
-                'old'        => $data,
+                'salary'           => $salary,
+                'employees'        => $employees,
+                'minimumDailyWage' => $service->activeMinimumDailyWage(460.00),
+                'activeStarts'     => $service->activeStartDates(),
+                'errors'           => [UserMessage::from($e)],
+                'formTitle'        => 'Update Salary Rate',
+                'formAction'       => '/hr/salary/' . $id,
+                'old'              => $data,
             ], 'Edit Salary');
         }
     }
@@ -198,7 +208,7 @@ final class SalaryController
             $this->makeService()->archive($id, (int) ($identity['user_id'] ?? 0));
             ViewRenderer::flash('Salary record archived.');
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/hr/salary');

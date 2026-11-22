@@ -28,8 +28,7 @@ final class EmployeeLifecycleRepository extends AbstractRepository
         $blockers = [];
 
         $checks = [
-            'unapproved payroll' => "SELECT COUNT(*) FROM payroll p JOIN payroll_run pr ON pr.payroll_run_id = p.payroll_run_id WHERE p.employee_id = :id AND pr.status IN ('Draft', 'Computed', 'PendingOwnerApproval')",
-            'pending request' => "SELECT COUNT(*) FROM request WHERE employee_id = :id AND status = 'Pending'",
+            'pending request' => "SELECT COUNT(*) FROM request WHERE employee_id = :id AND status IN ('Pending', 'HRApproved')",
             'open cash advance' => "SELECT COUNT(*) FROM cash_advance_history WHERE employee_id = :id AND status = 'Active' AND remaining_balance > 0",
         ];
         foreach ($checks as $label => $sql) {
@@ -43,17 +42,54 @@ final class EmployeeLifecycleRepository extends AbstractRepository
         return $blockers;
     }
 
-    /** @return list<string> */
-    public function archiveStartDateConflicts(int $employeeId, string $archiveEffectiveDate): array
+    /** @return list<array<string,mixed>> */
+    public function unapprovedPayrollRuns(int $employeeId): array
     {
-        $tables = [
+        $stmt = $this->pdo()->prepare(
+            "SELECT p.payroll_id, pr.payroll_run_id, pr.status, pp.period_start, pp.period_end
+               FROM payroll p
+               JOIN payroll_run pr ON pr.payroll_run_id = p.payroll_run_id
+               JOIN payroll_period pp ON pp.payroll_period_id = p.payroll_period_id
+              WHERE p.employee_id = :id
+                AND pr.status IN ('Draft', 'Computed', 'PendingOwnerApproval', 'Returned')
+              ORDER BY pp.period_start DESC"
+        );
+        $stmt->execute([':id' => $employeeId]);
+
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /** @return array<string,mixed>|null */
+    public function linkedUserAccount(int $employeeId): ?array
+    {
+        $stmt = $this->pdo()->prepare(
+            "SELECT u.user_id, u.username, r.role_name
+               FROM users u
+               JOIN role r ON r.role_id = u.role_id
+              WHERE u.employee_id = :id
+              ORDER BY u.user_id ASC
+              LIMIT 1"
+        );
+        $stmt->execute([':id' => $employeeId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        return $row === false ? null : $row;
+    }
+
+    /** @return list<string> */
+    public function archiveStartDateConflicts(int $employeeId, string $archiveEffectiveDate, ?string $lastWorkingDate = null): array
+    {
+        $lastWorkingDate ??= (new \DateTimeImmutable($archiveEffectiveDate))->modify('-1 day')->format('Y-m-d');
+        $exclusiveTables = [
             'branch assignment' => 'employee_branch_assignment',
-            'work schedule' => 'employee_schedule_assignment',
-            'salary rate' => 'salary',
             'biometric enrollment' => 'employee_biometric_enrollment',
         ];
+        $inclusiveTables = [
+            'work schedule' => 'employee_schedule_assignment',
+            'salary rate' => 'salary',
+        ];
         $conflicts = [];
-        foreach ($tables as $label => $table) {
+        foreach ($exclusiveTables as $label => $table) {
             $stmt = $this->pdo()->prepare(
                 "SELECT COUNT(*) FROM {$table} WHERE employee_id = :id AND effective_to IS NULL AND effective_from >= :date"
             );
@@ -62,22 +98,32 @@ final class EmployeeLifecycleRepository extends AbstractRepository
                 $conflicts[] = $label;
             }
         }
+        foreach ($inclusiveTables as $label => $table) {
+            $stmt = $this->pdo()->prepare(
+                "SELECT COUNT(*) FROM {$table} WHERE employee_id = :id AND effective_to IS NULL AND effective_from > :date"
+            );
+            $stmt->execute([':id' => $employeeId, ':date' => $lastWorkingDate]);
+            if ((int) $stmt->fetchColumn() > 0) {
+                $conflicts[] = $label;
+            }
+        }
 
         return $conflicts;
     }
 
-    public function closeActiveRelationships(int $employeeId, string $archiveEffectiveDate): void
+    public function closeActiveRelationships(int $employeeId, string $archiveEffectiveDate, ?string $lastWorkingDate = null): void
     {
+        $lastWorkingDate ??= (new \DateTimeImmutable($archiveEffectiveDate))->modify('-1 day')->format('Y-m-d');
         $pdo = $this->pdo();
-        $statements = [
-            "UPDATE employee_branch_assignment SET effective_to = :date WHERE employee_id = :id AND effective_to IS NULL",
-            "UPDATE employee_schedule_assignment SET effective_to = :date, status = 'Archived', updated_at = NOW() WHERE employee_id = :id AND effective_to IS NULL AND status = 'Active'",
-            "UPDATE salary SET effective_to = :date, status = 'Archived', updated_at = NOW() WHERE employee_id = :id AND effective_to IS NULL AND status = 'Active'",
-            "UPDATE employee_biometric_enrollment SET effective_to = :date, status = 'Inactive', updated_at = NOW() WHERE employee_id = :id AND effective_to IS NULL AND status = 'Active'",
-        ];
-        foreach ($statements as $sql) {
-            $pdo->prepare($sql)->execute([':id' => $employeeId, ':date' => $archiveEffectiveDate]);
-        }
+
+        $pdo->prepare("UPDATE employee_branch_assignment SET effective_to = :date WHERE employee_id = :id AND effective_to IS NULL")
+            ->execute([':id' => $employeeId, ':date' => $archiveEffectiveDate]);
+        $pdo->prepare("UPDATE employee_biometric_enrollment SET effective_to = :date, status = 'Inactive', updated_at = NOW() WHERE employee_id = :id AND effective_to IS NULL AND status = 'Active'")
+            ->execute([':id' => $employeeId, ':date' => $archiveEffectiveDate]);
+        $pdo->prepare("UPDATE employee_schedule_assignment SET effective_to = :date, status = 'Archived', updated_at = NOW() WHERE employee_id = :id AND effective_to IS NULL AND status = 'Active'")
+            ->execute([':id' => $employeeId, ':date' => $lastWorkingDate]);
+        $pdo->prepare("UPDATE salary SET effective_to = :date, status = 'Superseded', updated_at = NOW() WHERE employee_id = :id AND effective_to IS NULL AND status = 'Active'")
+            ->execute([':id' => $employeeId, ':date' => $lastWorkingDate]);
     }
 
     public function setEmployeeStatus(int $employeeId, string $status): void
@@ -126,8 +172,28 @@ final class EmployeeLifecycleRepository extends AbstractRepository
      */
     public function deactivateEmployeeAccounts(int $employeeId): void
     {
-        $this->pdo()->prepare("UPDATE users SET status = 'Archived', updated_at = NOW() WHERE employee_id = :id AND status IN ('Active', 'Inactive')")
+        $pdo = $this->pdo();
+        $pdo->prepare("UPDATE users SET status = 'Archived', updated_at = NOW() WHERE employee_id = :id AND status IN ('Active', 'Inactive')")
             ->execute([':id' => $employeeId]);
+        $pdo->prepare("DELETE FROM sessions WHERE user_id IN (SELECT user_id FROM users WHERE employee_id = :id)")
+            ->execute([':id' => $employeeId]);
+    }
+
+    /** @return list<array<string,mixed>> */
+    public function lifecycleEvents(int $employeeId): array
+    {
+        $stmt = $this->pdo()->prepare(
+            "SELECT ele.event_id, ele.event_type, ele.previous_status, ele.new_status,
+                    ele.effective_date, ele.reason, ele.notes, ele.created_at,
+                    u.username AS acted_by_username
+               FROM employee_lifecycle_event ele
+               LEFT JOIN users u ON u.user_id = ele.acted_by
+              WHERE ele.employee_id = :id
+              ORDER BY ele.created_at DESC, ele.event_id DESC"
+        );
+        $stmt->execute([':id' => $employeeId]);
+
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     public function assertRehireAssignmentsAvailable(int $employeeId, int $branchId, int $scheduleId, int $deviceId, string $enrollmentCode, string $rehireDate): void
@@ -195,10 +261,36 @@ final class EmployeeLifecycleRepository extends AbstractRepository
             ->execute([':employee' => $employeeId, ':device' => $deviceId, ':code' => $enrollmentCode, ':date' => $rehireDate]);
     }
 
-    public function updateEmploymentDetails(int $employeeId, string $position, string $employeeType): void
-    {
-        $this->pdo()->prepare('UPDATE employee SET position = :position, employee_type = :type, status = \'Active\', updated_at = NOW() WHERE employee_id = :id')
-            ->execute([':position' => $position, ':type' => $employeeType, ':id' => $employeeId]);
+    public function updateEmploymentDetails(
+        int $employeeId,
+        string $position,
+        string $employeeType,
+        ?string $rehireDate = null,
+        string $reviewDate = '',
+    ): void {
+        $pdo = $this->pdo();
+        $posStmt = $pdo->prepare('SELECT position_id FROM job_position WHERE LOWER(TRIM(position_title)) = LOWER(TRIM(:title)) LIMIT 1');
+        $posStmt->execute([':title' => $position]);
+        $posVal = $posStmt->fetchColumn();
+        $positionId = $posVal !== false ? (int) $posVal : null;
+
+        // HR's chosen review date wins; otherwise rehire date + 6 months. [EMP-024]
+        $contractReviewDate = null;
+        if (in_array($employeeType, ['Contractual', 'Probationary'], true) && $reviewDate !== '') {
+            $contractReviewDate = $reviewDate;
+        } elseif (in_array($employeeType, ['Contractual', 'Probationary'], true)) {
+            $refDate = $rehireDate ?? (new \DateTimeImmutable('now', new \DateTimeZone('Asia/Manila')))->format('Y-m-d');
+            $contractReviewDate = (new \DateTimeImmutable($refDate))->modify('+6 months')->format('Y-m-d');
+        }
+
+        $pdo->prepare('UPDATE employee SET position = :position, position_id = :position_id, employee_type = :type, contract_review_date = :review_date, status = \'Active\', updated_at = NOW() WHERE employee_id = :id')
+            ->execute([
+                ':position' => $position,
+                ':position_id' => $positionId,
+                ':type' => $employeeType,
+                ':review_date' => $contractReviewDate,
+                ':id' => $employeeId,
+            ]);
     }
 
     public function reactivateEmployeeAccounts(int $employeeId, string $temporaryPassword): bool

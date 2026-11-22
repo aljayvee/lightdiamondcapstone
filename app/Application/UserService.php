@@ -78,7 +78,7 @@ final class UserService
         $whereClause = $where !== [] ? 'WHERE ' . implode(' AND ', $where) : '';
 
         $sql = "SELECT u.user_id, u.username, u.account_email, u.status,
-                       u.employee_id, u.created_at, u.updated_at,
+                       u.employee_id, u.email_verified_at, u.created_at, u.updated_at,
                        r.role_id, r.role_name,
                        CONCAT(e.last_name, ', ', e.first_name) AS employee_name
                   FROM users u
@@ -148,13 +148,28 @@ final class UserService
      */
     public function generateTemporaryPassword(): string
     {
-        $chars = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-        $len   = strlen($chars);
-        $out   = '';
-        for ($i = 0; $i < 12; $i++) {
-            $out .= $chars[random_int(0, $len - 1)];
+        $lower   = 'abcdefghijkmnpqrstuvwxyz';
+        $upper   = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+        $digits  = '23456789';
+        $special = '!@#$%';
+        $all     = $lower . $upper . $digits;
+
+        $chars = [
+            $upper[random_int(0, strlen($upper) - 1)],
+            $lower[random_int(0, strlen($lower) - 1)],
+            $digits[random_int(0, strlen($digits) - 1)],
+            $special[random_int(0, strlen($special) - 1)],
+        ];
+        for ($i = 4; $i < 12; $i++) {
+            $chars[] = $all[random_int(0, strlen($all) - 1)];
         }
-        return $out;
+        // Cryptographic Fisher-Yates shuffle
+        for ($i = count($chars) - 1; $i > 0; $i--) {
+            $j = random_int(0, $i);
+            [$chars[$i], $chars[$j]] = [$chars[$j], $chars[$i]];
+        }
+
+        return implode('', $chars);
     }
 
     /**
@@ -339,11 +354,10 @@ final class UserService
                          ? (int) $data['employee_id'] : null)
                       : ($user['employee_id'] !== null ? (int) $user['employee_id'] : null);
 
-        if ($username === '') {
-            throw new RuntimeException('Username cannot be empty.');
-        }
-        if ($email === '') {
-            throw new RuntimeException('Email cannot be empty.');
+        // Same rules as the form, enforced here too (REQ005).
+        $fieldError = \Wbpms\Domain\Validation\FieldRules::username($username) ?? \Wbpms\Domain\Validation\FieldRules::email($email, 'Account email');
+        if ($fieldError !== null) {
+            throw new RuntimeException($fieldError);
         }
 
         if ($username !== $user['username']) {
@@ -416,6 +430,10 @@ final class UserService
 
         $newStatus = $user['status'] === 'Active' ? 'Inactive' : 'Active';
 
+        if ($newStatus === 'Inactive' && $actingUserId > 0 && $userId === $actingUserId) {
+            throw new RuntimeException('You cannot deactivate your own account.');
+        }
+
         if (
             $newStatus === 'Active'
             && AuthenticationPolicy::isUnlinkedEmployee(
@@ -429,6 +447,10 @@ final class UserService
         $this->connection->transaction(function (PDO $pdo) use ($userId, $newStatus, $actingUserId): void {
             $pdo->prepare("UPDATE users SET status = :s WHERE user_id = :id")
                 ->execute([':s' => $newStatus, ':id' => $userId]);
+
+            if ($newStatus === 'Inactive') {
+                (new \Wbpms\Infrastructure\Session\DatabaseSessionHandler($pdo))->invalidateAllByUserId($userId);
+            }
 
             $this->insertAudit($pdo, $actingUserId, 'user_status_changed', 'users', $userId,
                 "Status changed to '{$newStatus}' for user_id={$userId}");
@@ -462,15 +484,24 @@ final class UserService
             $pdo->prepare("UPDATE users SET status = 'Archived', updated_at = NOW() WHERE user_id = :id")
                 ->execute([':id' => $userId]);
 
-            // If this user is linked to an employee, mirror the Archived status
-            // on the employee record so it reflects correctly in Employee Management.
-            // (Full lifecycle closure — branch/schedule/salary — requires the
-            // controlled Employee archive workflow; this keeps statuses in sync.)
+            (new \Wbpms\Infrastructure\Session\DatabaseSessionHandler($pdo))->invalidateAllByUserId($userId);
+
+            // If this user is linked to an active employee, close effective-dated
+            // relationships properly rather than leaving orphaned open assignments.
             if (!empty($user['employee_id'])) {
-                $pdo->prepare(
-                    "UPDATE employee SET status = 'Archived', updated_at = NOW()
-                      WHERE employee_id = :emp_id AND status != 'Archived'"
-                )->execute([':emp_id' => $user['employee_id']]);
+                $empId = (int) $user['employee_id'];
+                $lastWorkingDate = (new \DateTimeImmutable('now', new \DateTimeZone('Asia/Manila')))->format('Y-m-d');
+                $archiveDate = (new \DateTimeImmutable($lastWorkingDate))->modify('+1 day')->format('Y-m-d');
+                $lifecycleRepo = new \Wbpms\Infrastructure\Persistence\EmployeeLifecycleRepository($this->connection);
+                $empRow = $lifecycleRepo->employeeForUpdate($empId);
+                if ($empRow !== null && $empRow['status'] !== 'Archived') {
+                    if ($lastWorkingDate < (string) $empRow['hire_date']) {
+                        $lastWorkingDate = (string) $empRow['hire_date'];
+                        $archiveDate = (new \DateTimeImmutable($lastWorkingDate))->modify('+1 day')->format('Y-m-d');
+                    }
+                    $lifecycleRepo->closeActiveRelationships($empId, $archiveDate, $lastWorkingDate);
+                    $lifecycleRepo->setEmployeeStatus($empId, 'Archived');
+                }
             }
 
             $this->insertAudit($pdo, $actingUserId, 'user_archived', 'users', $userId,
@@ -584,20 +615,71 @@ final class UserService
     // Private guards
     // -----------------------------------------------------------------------
 
+    public function issueEmailVerificationToken(int $userId): string
+    {
+        $rawToken  = bin2hex(random_bytes(32));
+        $tokenHash = hash('sha256', $rawToken);
+        $expiresAt = (new \DateTimeImmutable('+24 hours', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
+
+        $this->connection->pdo()->prepare(
+            "UPDATE users
+                SET email_verification_token_hash = :hash,
+                    email_verification_expires_at = :exp,
+                    updated_at = NOW()
+              WHERE user_id = :id"
+        )->execute([
+            ':hash' => $tokenHash,
+            ':exp'  => $expiresAt,
+            ':id'   => $userId,
+        ]);
+
+        return $rawToken;
+    }
+
+    public function verifyEmailToken(string $rawToken): bool
+    {
+        if ($rawToken === '' || strlen($rawToken) < 32) {
+            return false;
+        }
+        $tokenHash = hash('sha256', $rawToken);
+        $nowUtc    = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
+        $pdo       = $this->connection->pdo();
+
+        $stmt = $pdo->prepare(
+            "SELECT user_id
+               FROM users
+              WHERE email_verification_token_hash = :hash
+                AND (email_verification_expires_at IS NULL OR email_verification_expires_at >= :now)
+              LIMIT 1"
+        );
+        $stmt->execute([':hash' => $tokenHash, ':now' => $nowUtc]);
+        $userId = $stmt->fetchColumn();
+        if ($userId === false) {
+            return false;
+        }
+
+        $pdo->prepare(
+            "UPDATE users
+                SET email_verified_at = NOW(),
+                    email_verification_token_hash = NULL,
+                    email_verification_expires_at = NULL,
+                    updated_at = NOW()
+              WHERE user_id = :id"
+        )->execute([':id' => (int) $userId]);
+
+        return true;
+    }
+
     private function validateCreateInput(
         string $username, string $email, string $password, int $roleId
     ): void {
-        if ($username === '') {
-            throw new RuntimeException('Username is required.');
+        $fieldError = \Wbpms\Domain\Validation\FieldRules::username($username) ?? \Wbpms\Domain\Validation\FieldRules::email($email, 'Account email');
+        if ($fieldError !== null) {
+            throw new RuntimeException($fieldError);
         }
-        if (strlen($username) > 50) {
-            throw new RuntimeException('Username must be 50 characters or fewer.');
-        }
-        if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-            throw new RuntimeException('A valid email address is required.');
-        }
-        if (strlen($password) < 8) {
-            throw new RuntimeException('Password must be at least 8 characters.');
+        $pwdError = AuthenticationPolicy::validatePasswordStrength($password);
+        if ($pwdError !== null) {
+            throw new RuntimeException($pwdError);
         }
         if ($roleId <= 0) {
             throw new RuntimeException('A valid role must be selected.');

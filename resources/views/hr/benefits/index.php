@@ -25,7 +25,7 @@
     <h3 style="margin:0 0 1rem">Active Contribution Policies</h3>
     <?php $approvedPolicies = array_filter($policies, fn($p) => $p['status'] === 'Approved'); ?>
     <?php if ($approvedPolicies === []): ?>
-    <p style="color:#6b7280">No approved policies. <a href="<?= $base ?>/hr/benefits/policies">Set up contribution policies →</a></p>
+    <p style="color:#6b7280">No approved policies. <a href="<?= $base ?>/hr/benefits/policies">Set up contribution policies <?= \Wbpms\Http\View\Icon::svg('chevron-right') ?></a></p>
     <?php else: ?>
     <table class="data-table">
         <thead>
@@ -36,8 +36,8 @@
         <tr>
             <td><strong><?= htmlspecialchars($p['program']) ?></strong></td>
             <td><?= htmlspecialchars($p['version']) ?></td>
-            <td><?= htmlspecialchars($p['effective_from']) ?></td>
-            <td><?= $p['effective_to'] ? htmlspecialchars($p['effective_to']) : '—' ?></td>
+            <td><?= \Wbpms\Http\View\Formatter::date($p['effective_from']) ?></td>
+            <td><?= \Wbpms\Http\View\Formatter::date($p['effective_to'] ?: null) ?></td>
             <td><span style="background:#10b981;color:#fff;padding:2px 8px;border-radius:9999px;font-size:.75rem">Approved</span></td>
         </tr>
         <?php endforeach; ?>
@@ -72,14 +72,14 @@
             <input type="search" name="employee_search" value="<?= htmlspecialchars($filters['employee_search'] ?? '') ?>" placeholder="Name or employee no." style="min-width:13rem">
         </div>
         <div>
-            <label style="font-size:.8rem;font-weight:500;display:block;margin-bottom:.25rem">Period from</label>
+            <label style="font-size:.8rem;font-weight:500;display:block;margin-bottom:.25rem">From</label>
             <input type="date" name="date_from" value="<?= htmlspecialchars($filters['date_from'] ?? '') ?>">
         </div>
         <div>
-            <label style="font-size:.8rem;font-weight:500;display:block;margin-bottom:.25rem">Period to</label>
+            <label style="font-size:.8rem;font-weight:500;display:block;margin-bottom:.25rem">To</label>
             <input type="date" name="date_to" value="<?= htmlspecialchars($filters['date_to'] ?? '') ?>">
         </div>
-        <button type="submit" class="btn btn-primary">Apply</button>
+        <button type="submit" class="btn btn-primary">Apply Filters</button>
         <a href="<?= $base ?>/hr/benefits" class="btn btn-secondary">Clear</a>
     </form>
     <?php if ($records === []): ?>
@@ -111,7 +111,7 @@
                 <small style="color:#6b7280"><?= htmlspecialchars($r['employee_number']) ?></small>
             </td>
             <td><?= htmlspecialchars($r['program']) ?></td>
-            <td style="font-size:.8rem"><?= htmlspecialchars($r['period_start'].' – '.$r['period_end']) ?></td>
+            <td style="font-size:.8rem"><?= \Wbpms\Http\View\Formatter::date($r['period_start']) ?> – <?= \Wbpms\Http\View\Formatter::date($r['period_end']) ?></td>
             <td><?= \Wbpms\Http\View\Formatter::date($r['pay_date']) ?></td>
             <td style="text-align:right">₱<?= number_format((float)$r['employee_share'], 2) ?></td>
             <td style="text-align:right">₱<?= number_format((float)$r['employer_share'], 2) ?></td>

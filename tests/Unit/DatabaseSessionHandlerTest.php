@@ -7,6 +7,7 @@ namespace Wbpms\Tests\Unit;
 use PDO;
 use PDOStatement;
 use PHPUnit\Framework\MockObject\MockObject;
+use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Wbpms\Infrastructure\Session\DatabaseSessionHandler;
 
@@ -42,18 +43,14 @@ final class DatabaseSessionHandlerTest extends TestCase
     // open / close
     // -----------------------------------------------------------------------
 
-    /**
-     * @test
-     */
+    #[Test]
     public function open_returns_true(): void
     {
         $handler = new DatabaseSessionHandler($this->makePdo());
         $this->assertTrue($handler->open('', 'PHPSESSID'));
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function close_returns_true(): void
     {
         $handler = new DatabaseSessionHandler($this->makePdo());
@@ -65,9 +62,9 @@ final class DatabaseSessionHandlerTest extends TestCase
     // -----------------------------------------------------------------------
 
     /**
-     * @test
      * read() returns empty string when session row does not exist.
      */
+    #[Test]
     public function read_returns_empty_string_when_row_missing(): void
     {
         $stmt = $this->makeStmt(false);
@@ -81,9 +78,9 @@ final class DatabaseSessionHandlerTest extends TestCase
     }
 
     /**
-     * @test
      * read() returns empty string when the session has expired (absolute TTL).
      */
+    #[Test]
     public function read_returns_empty_string_when_session_expired(): void
     {
         $expiredAt = time() - 1; // one second in the past
@@ -105,9 +102,9 @@ final class DatabaseSessionHandlerTest extends TestCase
     }
 
     /**
-     * @test
      * read() returns the session data when not expired.
      */
+    #[Test]
     public function read_returns_data_when_session_is_valid(): void
     {
         $futureExpiry = time() + 3600;
@@ -132,9 +129,9 @@ final class DatabaseSessionHandlerTest extends TestCase
     // -----------------------------------------------------------------------
 
     /**
-     * @test
      * write() executes an UPSERT and returns true.
      */
+    #[Test]
     public function write_returns_true_on_success(): void
     {
         $stmt = $this->makeStmt(false, true);
@@ -152,9 +149,9 @@ final class DatabaseSessionHandlerTest extends TestCase
     // -----------------------------------------------------------------------
 
     /**
-     * @test
      * destroy() executes a DELETE and returns true.
      */
+    #[Test]
     public function destroy_returns_true(): void
     {
         $stmt = $this->makeStmt(false, true);
@@ -172,9 +169,9 @@ final class DatabaseSessionHandlerTest extends TestCase
     // -----------------------------------------------------------------------
 
     /**
-     * @test
      * gc() deletes expired sessions and returns the affected row count.
      */
+    #[Test]
     public function gc_returns_deleted_row_count(): void
     {
         $stmt = $this->makeStmt(false, true);
@@ -194,9 +191,9 @@ final class DatabaseSessionHandlerTest extends TestCase
     // -----------------------------------------------------------------------
 
     /**
-     * @test
      * The absolute expiry stored in expires_at is time() + absoluteTtl.
      */
+    #[Test]
     public function write_stores_correct_absolute_expiry(): void
     {
         $absoluteTtl = 43200; // 12 hours

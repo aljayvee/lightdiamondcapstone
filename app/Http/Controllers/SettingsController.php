@@ -7,6 +7,7 @@ namespace Wbpms\Http\Controllers;
 use RuntimeException;
 use Wbpms\Application\PayrollService;
 use Wbpms\Http\View\ViewRenderer;
+use Wbpms\Http\View\UserMessage;
 use Wbpms\Infrastructure\Database\Connection;
 use Wbpms\Infrastructure\Persistence\PositionRepository;
 use Wbpms\Infrastructure\Persistence\ScheduleRepository;
@@ -58,21 +59,82 @@ final class SettingsController
         $active    = count(array_filter($positions, fn($p) => $p['status'] === 'Active'));
 
         ViewRenderer::render('hr/settings/index', [
-            'activePage' => 'settings',
-            'tab'        => 'positions',
-            'positions'  => $positions,
-            'total'      => $total,
-            'active'     => $active,
-            'inactive'   => $total - $active,
-            'errors'     => [],
-            'editRow'    => null,
+            'activePage'    => 'settings',
+            'tab'           => 'positions',
+            'positions'     => $positions,
+            'payrollPolicy' => $this->activePayrollPolicy(),
+            'total'         => $total,
+            'active'        => $active,
+            'inactive'      => $total - $active,
+            'errors'        => [],
+            'editRow'       => null,
         ], 'Settings');
+    }
+
+    /** POST /hr/settings/policy */
+    public function updatePolicy(array $params = []): void
+    {
+        $minWageRaw   = trim((string) ($_POST['minimum_daily_wage']   ?? ''));
+        $thresholdRaw = trim((string) ($_POST['annual_tax_threshold'] ?? ''));
+
+        if ($minWageRaw === '' || !is_numeric($minWageRaw) || (float) $minWageRaw < 350.00 || (float) $minWageRaw > 5000.00) {
+            ViewRenderer::flashError('Minimum daily wage must be a valid amount between ₱350.00 and ₱5,000.00.');
+            $this->redirect('/hr/settings/positions');
+            return;
+        }
+        if ($thresholdRaw === '' || !is_numeric($thresholdRaw) || (float) $thresholdRaw < 0.00) {
+            ViewRenderer::flashError('Annual tax threshold must be a non-negative amount.');
+            $this->redirect('/hr/settings/positions');
+            return;
+        }
+
+        $minWage   = round((float) $minWageRaw, 2);
+        $threshold = round((float) $thresholdRaw, 2);
+        $pdo       = (new Connection(require APP_ROOT . '/config/database.php'))->pdo();
+
+        $policy = $this->activePayrollPolicy();
+        if (($policy['policy_id'] ?? 0) > 0) {
+            $pdo->prepare(
+                "UPDATE payroll_policy_version
+                    SET minimum_daily_wage   = :min_wage,
+                        annual_tax_threshold = :threshold,
+                        updated_at           = NOW()
+                  WHERE policy_id = :id"
+            )->execute([
+                ':min_wage'  => $minWage,
+                ':threshold' => $threshold,
+                ':id'        => (int) $policy['policy_id'],
+            ]);
+        } else {
+            $pdo->prepare(
+                "INSERT INTO payroll_policy_version
+                    (policy_code, version, effective_from, effective_to,
+                     eemr_days_per_year, minimum_daily_wage, annual_tax_threshold,
+                     late_rate_per_minute, rounding_mode, demo_only, status,
+                     approved_at, created_at, updated_at)
+                 VALUES
+                    ('DEFAULT', 'V1', '2024-01-01', NULL,
+                     313, :min_wage, :threshold,
+                     1.00, 'HalfUp', FALSE, 'Approved',
+                     NOW(), NOW(), NOW())"
+            )->execute([
+                ':min_wage'  => $minWage,
+                ':threshold' => $threshold,
+            ]);
+        }
+
+        ViewRenderer::flash(sprintf(
+            'Payroll policy updated: DOLE minimum daily wage floor set to ₱%s (BIR annual tax threshold ₱%s).',
+            number_format($minWage, 2),
+            number_format($threshold, 2),
+        ));
+        $this->redirect('/hr/settings/positions');
     }
 
     /** POST /hr/settings/positions */
     public function storePosition(array $params = []): void
     {
-        ['title' => $title, 'department' => $dept, 'sort_order' => $sort, 'errors' => $errors]
+        ['title' => $title, 'department' => $dept, 'sort_order' => $sort, 'default_daily_rate' => $defaultRate, 'requires_regular' => $reqReg, 'errors' => $errors]
             = $this->extractPosition();
 
         if ($errors !== []) {
@@ -81,10 +143,10 @@ final class SettingsController
         }
 
         try {
-            $this->posRepo()->create($title, $dept, $sort);
+            $this->posRepo()->create($title, $dept, $sort, $defaultRate, $reqReg);
             ViewRenderer::flash("Position \"{$title}\" created.");
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/hr/settings/positions');
@@ -98,11 +160,11 @@ final class SettingsController
 
         if ($repo->findById($id) === null) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
-        ['title' => $title, 'department' => $dept, 'sort_order' => $sort, 'errors' => $errors]
+        ['title' => $title, 'department' => $dept, 'sort_order' => $sort, 'default_daily_rate' => $defaultRate, 'requires_regular' => $reqReg, 'errors' => $errors]
             = $this->extractPosition();
 
         if ($errors !== []) {
@@ -111,10 +173,10 @@ final class SettingsController
         }
 
         try {
-            $repo->update($id, $title, $dept, $sort);
+            $repo->update($id, $title, $dept, $sort, $defaultRate, $reqReg);
             ViewRenderer::flash("Position \"{$title}\" updated.");
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/hr/settings/positions');
@@ -129,7 +191,7 @@ final class SettingsController
 
         if ($row === null) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
@@ -173,7 +235,7 @@ final class SettingsController
                 'activePage'   => 'settings',
                 'tab'          => 'periods',
                 'periods'      => $service->listPeriods(),
-                'errors'       => [$e->getMessage()],
+                'errors'       => [UserMessage::from($e)],
                 'payroll_month' => $month,
             ], 'Settings');
         }
@@ -211,7 +273,7 @@ final class SettingsController
                 $this->redirect('/hr/settings/holidays');
                 return;
             } catch (RuntimeException $e) {
-                $errors['holiday_date'] = $e->getMessage();
+                $errors['holiday_date'] = UserMessage::from($e);
             }
         }
 
@@ -232,7 +294,7 @@ final class SettingsController
 
         if ($holiday === null) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
@@ -252,7 +314,7 @@ final class SettingsController
 
         if ($holiday === null) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
@@ -271,7 +333,7 @@ final class SettingsController
                 $this->redirect('/hr/settings/holidays');
                 return;
             } catch (RuntimeException $e) {
-                $errors['holiday_date'] = $e->getMessage();
+                $errors['holiday_date'] = UserMessage::from($e);
             }
         }
 
@@ -289,7 +351,7 @@ final class SettingsController
 
         if ($this->schedRepo()->findHolidayById($id) === null) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
@@ -303,14 +365,16 @@ final class SettingsController
     // =========================================================================
 
     /**
-     * @return array{title:string,department:string|null,sort_order:int,errors:array<string,string>}
+     * @return array{title:string,department:string|null,sort_order:int,default_daily_rate:float|null,requires_regular:bool,errors:array<string,string>}
      */
     private function extractPosition(): array
     {
-        $title  = trim((string) ($_POST['position_title'] ?? ''));
-        $dept   = trim((string) ($_POST['department']     ?? ''));
-        $sort   = (int) ($_POST['sort_order'] ?? 0);
-        $errors = [];
+        $title    = trim((string) ($_POST['position_title']     ?? ''));
+        $dept     = trim((string) ($_POST['department']         ?? ''));
+        $sort     = (int) ($_POST['sort_order'] ?? 0);
+        $rateRaw  = trim((string) ($_POST['default_daily_rate'] ?? ''));
+        $reqReg   = !empty($_POST['requires_regular']);
+        $errors   = [];
 
         if ($title === '') {
             $errors['position_title'] = 'Position title is required.';
@@ -318,11 +382,23 @@ final class SettingsController
             $errors['position_title'] = 'Position title must be 100 characters or fewer.';
         }
 
+        $defaultRate = null;
+        $minWageFloor = (float) ($this->activePayrollPolicy()['minimum_daily_wage'] ?? 460.00);
+        if ($rateRaw !== '') {
+            if (!is_numeric($rateRaw) || (float) $rateRaw < $minWageFloor) {
+                $errors['default_daily_rate'] = sprintf('Default daily rate must be at least the active minimum wage (₱%s).', number_format($minWageFloor, 2));
+            } else {
+                $defaultRate = round((float) $rateRaw, 2);
+            }
+        }
+
         return [
-            'title'      => $title,
-            'department' => $dept !== '' ? $dept : null,
-            'sort_order' => max(0, $sort),
-            'errors'     => $errors,
+            'title'              => $title,
+            'department'         => $dept !== '' ? $dept : null,
+            'sort_order'         => max(0, $sort),
+            'default_daily_rate' => $defaultRate,
+            'requires_regular'   => $reqReg,
+            'errors'             => $errors,
         ];
     }
 
@@ -333,16 +409,48 @@ final class SettingsController
         $positions = $repo->findAll();
         $total     = count($positions);
         ViewRenderer::render('hr/settings/index', [
-            'activePage' => 'settings',
-            'tab'        => 'positions',
-            'positions'  => $positions,
-            'total'      => $total,
-            'active'     => count(array_filter($positions, fn($p) => $p['status'] === 'Active')),
-            'inactive'   => count(array_filter($positions, fn($p) => $p['status'] !== 'Active')),
-            'errors'     => $errors,
-            'editRow'    => $editId,
-            'input'      => $_POST,
+            'activePage'    => 'settings',
+            'tab'           => 'positions',
+            'positions'     => $positions,
+            'payrollPolicy' => $this->activePayrollPolicy(),
+            'total'         => $total,
+            'active'        => count(array_filter($positions, fn($p) => $p['status'] === 'Active')),
+            'inactive'      => count(array_filter($positions, fn($p) => $p['status'] !== 'Active')),
+            'errors'        => $errors,
+            'editRow'       => $editId,
+            'input'         => $_POST,
         ], 'Settings');
+    }
+
+    /** @return array{policy_id:int,minimum_daily_wage:float,annual_tax_threshold:float} */
+    private function activePayrollPolicy(): array
+    {
+        try {
+            $pdo = (new Connection(require APP_ROOT . '/config/database.php'))->pdo();
+            $stmt = $pdo->query(
+                "SELECT policy_id, minimum_daily_wage, annual_tax_threshold
+                   FROM payroll_policy_version
+                  WHERE status = 'Approved'
+                  ORDER BY effective_from DESC
+                  LIMIT 1"
+            );
+            $row = $stmt !== false ? $stmt->fetch(\PDO::FETCH_ASSOC) : false;
+            if ($row !== false) {
+                return [
+                    'policy_id'            => (int) $row['policy_id'],
+                    'minimum_daily_wage'   => (float) ($row['minimum_daily_wage'] ?? 460.00),
+                    'annual_tax_threshold' => (float) ($row['annual_tax_threshold'] ?? 250000.00),
+                ];
+            }
+        } catch (\Throwable) {
+            // Fallback when running on minimal schema
+        }
+
+        return [
+            'policy_id'            => 0,
+            'minimum_daily_wage'   => 460.00,
+            'annual_tax_threshold' => 250000.00,
+        ];
     }
 
     /** @return array<string,string> */

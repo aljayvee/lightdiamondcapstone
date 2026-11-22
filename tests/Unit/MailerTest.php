@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Wbpms\Tests\Unit;
 
+use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Wbpms\Infrastructure\Mail\Mailer;
@@ -49,7 +50,7 @@ final class MailerTest extends TestCase
     // Log driver
     // -----------------------------------------------------------------------
 
-    /** @test */
+    #[Test]
     public function log_driver_writes_email_without_throwing(): void
     {
         $this->setLogEnv();
@@ -71,7 +72,7 @@ final class MailerTest extends TestCase
     // Unsupported driver
     // -----------------------------------------------------------------------
 
-    /** @test */
+    #[Test]
     public function unsupported_driver_throws_runtime_exception(): void
     {
         $_ENV['MAIL_DRIVER'] = 'mailgun';
@@ -84,7 +85,7 @@ final class MailerTest extends TestCase
         $mailer->send('r@example.com', 'S', 'B');
     }
 
-    /** @test */
+    #[Test]
     public function unsupported_driver_error_lists_supported_drivers(): void
     {
         $_ENV['MAIL_DRIVER'] = 'sendgrid';
@@ -100,7 +101,7 @@ final class MailerTest extends TestCase
         }
     }
 
-    /** @test */
+    #[Test]
     public function unsupported_driver_does_not_expose_credentials_in_exception(): void
     {
         $_ENV['MAIL_DRIVER']   = 'unknown_provider';

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Wbpms\Tests\Unit;
 
+use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Wbpms\Http\Routing\Router;
 
@@ -21,9 +22,9 @@ use Wbpms\Http\Routing\Router;
 final class RouterTest extends TestCase
 {
     /**
-     * @test
      * Routes registered with add() match on the correct method + path.
      */
+    #[Test]
     public function it_resolves_registered_routes_by_method_and_path(): void
     {
         // We test the private match() logic by observing dispatch behaviour
@@ -39,9 +40,9 @@ final class RouterTest extends TestCase
     }
 
     /**
-     * @test
      * add() accepts the expected parameters without error.
      */
+    #[Test]
     public function it_accepts_route_registration_parameters(): void
     {
         $router = new Router();
@@ -56,10 +57,10 @@ final class RouterTest extends TestCase
     }
 
     /**
-     * @test
      * Roles are correctly associated with protected routes.
      * (Indirectly verified: adding a protected route does not throw.)
      */
+    #[Test]
     public function protected_routes_require_role_specification(): void
     {
         $router = new Router();

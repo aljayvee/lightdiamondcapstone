@@ -30,6 +30,8 @@ final class ApprovedOvertimeCalculator
         int $unpaidBreakMinutes,
         int $standardMinutes,
         array $approvedRequests,
+        ?string $breakStartTime = null,
+        ?string $breakEndTime = null,
     ): int {
         if ($timeIn === null || $timeOut === null || $approvedRequests === []) {
             return 0;
@@ -54,7 +56,15 @@ final class ApprovedOvertimeCalculator
             return 0;
         }
 
-        $workedMinutes = max(0, ($actualEnd - $actualStart) - max(0, $unpaidBreakMinutes));
+        $effectiveBreak = $this->effectiveBreakMinutes(
+            $actualStart,
+            $actualEnd,
+            $scheduleStart,
+            $unpaidBreakMinutes,
+            $breakStartTime,
+            $breakEndTime,
+        );
+        $workedMinutes = max(0, ($actualEnd - $actualStart) - $effectiveBreak);
         $recordedOvertime = max(0, $workedMinutes - max(1, $standardMinutes));
         if ($recordedOvertime === 0) {
             return 0;
@@ -158,6 +168,33 @@ final class ApprovedOvertimeCalculator
         $paid += $end - $start;
 
         return $paid;
+    }
+
+    private function effectiveBreakMinutes(
+        int $actualStart,
+        int $actualEnd,
+        int $scheduleStart,
+        int $unpaidBreakMinutes,
+        ?string $breakStartTime,
+        ?string $breakEndTime,
+    ): int {
+        $unpaidBreakMinutes = max(0, $unpaidBreakMinutes);
+        if ($unpaidBreakMinutes === 0 || $breakStartTime === null || $breakEndTime === null) {
+            return $unpaidBreakMinutes;
+        }
+        $bStart = $this->minutesFromMidnight($breakStartTime);
+        $bEnd   = $this->minutesFromMidnight($breakEndTime);
+        if ($bStart === null || $bEnd === null || $bStart === $bEnd) {
+            return $unpaidBreakMinutes;
+        }
+        if ($bStart < $scheduleStart) {
+            $bStart += 1440;
+        }
+        if ($bEnd <= $bStart) {
+            $bEnd += 1440;
+        }
+        $overlap = max(0, min($actualEnd, $bEnd) - max($actualStart, $bStart));
+        return min($unpaidBreakMinutes, $overlap);
     }
 
     private function minutesFromMidnight(string $time): ?int

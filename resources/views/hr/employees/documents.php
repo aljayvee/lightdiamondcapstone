@@ -50,7 +50,7 @@ $formatSize = static function (int $bytes): string {
 
 <div class="page-header">
     <h1>Documents — <?= $empName ?></h1>
-    <a href="<?= $base ?>/hr/employees/<?= $empId ?>/edit" class="btn btn-secondary">← Back to Employee</a>
+    <a href="<?= $base ?>/hr/employees/<?= $empId ?>/edit" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Employee</a>
 </div>
 
 <!-- ------------------------------------------------------------------ -->
@@ -72,7 +72,7 @@ $formatSize = static function (int $bytes): string {
 
         <div class="form-row">
             <div class="form-group">
-                <label for="document_type">Document type <span style="color:#dc2626">*</span></label>
+                <label for="document_type">Document Type <span style="color:#dc2626">*</span></label>
                 <select id="document_type" name="document_type" required>
                     <option value="">— select —</option>
                     <?php foreach ($documentTypes as $key => $label): ?>
@@ -188,7 +188,7 @@ $formatSize = static function (int $bytes): string {
                     <?php if (!$verifiedAt): ?>
                     <form method="POST"
                           action="<?= $base ?>/hr/employees/<?= $empId ?>/documents/<?= $docId ?>/verify"
-                          onsubmit="return confirm('Mark this document as verified?')">
+                          data-confirm="Mark this document as verified?">
                         <input type="hidden" name="_csrf" value="<?= Formatter::escape($csrf) ?>">
                         <button type="submit" class="btn btn-sm btn-primary" title="Mark verified">
                             Verify
@@ -205,7 +205,7 @@ $formatSize = static function (int $bytes): string {
                     <!-- Archive -->
                     <form method="POST"
                           action="<?= $base ?>/hr/employees/<?= $empId ?>/documents/<?= $docId ?>/archive"
-                          onsubmit="return confirm('Archive this document? The file will be retained but marked inactive.')">
+                          data-confirm="Archive this document? The file will be retained but marked inactive.">
                         <input type="hidden" name="_csrf" value="<?= Formatter::escape($csrf) ?>">
                         <button type="submit" class="btn btn-sm btn-secondary" title="Archive document">
                             Archive
@@ -228,7 +228,7 @@ $formatSize = static function (int $bytes): string {
                         <input type="hidden" name="_csrf" value="<?= Formatter::escape($csrf) ?>">
                         <div class="form-row" style="margin-bottom:.5rem">
                             <div class="form-group" style="margin:0">
-                                <label style="font-size:.8rem">Document type <span style="color:#dc2626">*</span></label>
+                                <label style="font-size:.8rem">Document Type <span style="color:#dc2626">*</span></label>
                                 <select name="document_type" required style="font-size:.85rem">
                                     <?php foreach ($documentTypes as $key => $lbl): ?>
                                     <option value="<?= Formatter::escape($key) ?>"
@@ -247,7 +247,7 @@ $formatSize = static function (int $bytes): string {
                         </div>
                         <div class="form-group" style="margin-bottom:.5rem">
                             <label style="font-size:.8rem">
-                                New file <span style="color:#dc2626">*</span>
+                                New File <span style="color:#dc2626">*</span>
                                 <span class="muted"> PDF / JPEG / PNG · max 5 MB</span>
                             </label>
                             <input type="file" name="document"

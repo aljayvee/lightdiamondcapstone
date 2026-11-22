@@ -9,6 +9,7 @@ use RuntimeException;
 use Wbpms\Application\RequestService;
 use Wbpms\Http\Middleware\AuthMiddleware;
 use Wbpms\Http\View\ViewRenderer;
+use Wbpms\Http\View\UserMessage;
 use Wbpms\Infrastructure\Database\Connection;
 use Wbpms\Infrastructure\Persistence\EmployeeRepository;
 
@@ -138,7 +139,7 @@ final class RequestsController
             ViewRenderer::render('hr/requests/form', [
                 'employees' => $this->activeEmployeeList($repo),
                 'types'     => $service->requestTypes(),
-                'errors'    => ['_general' => $e->getMessage()],
+                'errors'    => ['_general' => UserMessage::from($e)],
                 'old'       => $_POST,
             ], 'New Request');
         }
@@ -157,7 +158,7 @@ final class RequestsController
             $request = $this->makeService()->findOrFail($id);
         } catch (RuntimeException) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
@@ -181,7 +182,7 @@ final class RequestsController
             $this->makeService()->approve($id, (int) ($identity['user_id'] ?? 0));
             ViewRenderer::flash('Request pre-approved. It is now awaiting the Business Owner\'s final approval.');
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/hr/requests');
@@ -202,7 +203,7 @@ final class RequestsController
             $this->makeService()->cancelRequest($id, (int) ($identity['user_id'] ?? 0), $note);
             ViewRenderer::flash('Request cancelled.');
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/hr/requests');
@@ -231,7 +232,7 @@ final class RequestsController
             $this->makeService()->archive($id, (int) ($identity['user_id'] ?? 0));
             ViewRenderer::flash('Request archived.');
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/hr/requests');
@@ -283,7 +284,7 @@ final class RequestsController
         $employee = $empRow->fetch();
         if ($employee === false) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
@@ -336,7 +337,7 @@ final class RequestsController
                 'balance'  => $service->leaveBalance($employeeId, $year),
                 'ledger'   => $service->leaveLedger($employeeId, $year),
                 'year'     => $year,
-                'errors'   => [$e->getMessage()],
+                'errors'   => [UserMessage::from($e)],
             ], 'Leave Credits — ' . ($employee['employee_name'] ?? ''));
         }
     }

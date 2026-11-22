@@ -65,8 +65,8 @@ $rangeLabel = $dateFrom !== '' && $dateTo !== ''
             <input id="frequencySearch" type="search" name="search" value="<?= Formatter::escape($search) ?>" placeholder="Name or employee number">
         </div>
         <div class="frequency-filter-actions">
-            <button type="submit" class="btn btn-primary">Filter</button>
-            <a href="<?= $base ?>/hr/attendance/frequency-report" class="btn btn-secondary">Reset</a>
+            <button type="submit" class="btn btn-primary">Apply Filters</button>
+            <a href="<?= $base ?>/hr/attendance/frequency-report" class="btn btn-secondary">Clear</a>
         </div>
     </form>
 </section>
@@ -124,10 +124,10 @@ $rangeLabel = $dateFrom !== '' && $dateTo !== ''
                 <tr>
                     <th>Employee</th>
                     <th>Branch</th>
-                    <th class="number">Tardy days</th>
-                    <th class="number">Late minutes</th>
-                    <th class="number">Absence days</th>
-                    <th class="number">Total frequency</th>
+                    <th class="number">Tardy Days</th>
+                    <th class="number">Late Minutes</th>
+                    <th class="number">Absence Days</th>
+                    <th class="number">Total Frequency</th>
                 </tr>
             </thead>
             <tbody>

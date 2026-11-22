@@ -2,16 +2,25 @@
 /**
  * View: hr/payroll/run  (GET /hr/payroll/create)
  * Variables: $periods (list from PayrollService::periods()),
- *            $branches, $errors
+ *            $branches, $errors,
+ *            $selectedPeriodId / $selectedBranchId (from ?period_id=&branch_id=, PAY-025)
  */
 $errors ??= [];
+$selectedPeriodId = (int) ($selectedPeriodId ?? 0);
+$selectedBranchId = (int) ($selectedBranchId ?? 0);
+$selectedYm = '';
+foreach ($periods as $p) {
+    if ((int) $p['payroll_period_id'] === $selectedPeriodId) {
+        $selectedYm = substr($p['period_start'], 0, 7);
+    }
+}
 ?>
 <div class="page-head">
     <div>
         <h1>New Payroll Run</h1>
         <p>Create a new payroll computation run for a pay period and branch.</p>
     </div>
-    <a href="<?= $base ?>/hr/payroll" class="btn btn-secondary">← Back to Payroll</a>
+    <a href="<?= $base ?>/hr/payroll" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Payroll</a>
 </div>
 
 <?php if ($errors !== []): ?>
@@ -42,7 +51,7 @@ $errors ??= [];
                     foreach (array_keys($runMonths) as $ym):
                         $label = (new DateTimeImmutable($ym . '-01'))->format('F Y');
                     ?>
-                    <option value="<?= htmlspecialchars($ym) ?>"><?= htmlspecialchars($label) ?></option>
+                    <option value="<?= htmlspecialchars($ym) ?>"<?= $ym === $selectedYm ? ' selected' : '' ?>><?= htmlspecialchars($label) ?></option>
                     <?php endforeach; ?>
                 </select>
                 <span style="font-size:.8rem;color:#6b7280">then select a cut-off below</span>
@@ -52,7 +61,7 @@ $errors ??= [];
                 <option value="">— Select Period —</option>
                 <?php foreach ($periods as $p): ?>
                 <option value="<?= (int)$p['payroll_period_id'] ?>"
-                        data-ym="<?= htmlspecialchars(substr($p['period_start'], 0, 7)) ?>">
+                        data-ym="<?= htmlspecialchars(substr($p['period_start'], 0, 7)) ?>"<?= (int) $p['payroll_period_id'] === $selectedPeriodId ? ' selected' : '' ?>>
                     <?= htmlspecialchars($p['label']) ?>
                     <?php if ($p['status'] !== 'Open'): ?>
                     (<?= htmlspecialchars($p['status']) ?>)
@@ -69,7 +78,7 @@ $errors ??= [];
             <select id="branch_id" name="branch_id" class="form-control" required>
                 <option value="">— Select Branch —</option>
                 <?php foreach ($branches as $b): ?>
-                <option value="<?= (int)$b['branch_id'] ?>"><?= htmlspecialchars($b['branch_name']) ?></option>
+                <option value="<?= (int)$b['branch_id'] ?>"<?= (int) $b['branch_id'] === $selectedBranchId ? ' selected' : '' ?>><?= htmlspecialchars($b['branch_name']) ?></option>
                 <?php endforeach; ?>
             </select>
             <small style="color:#6b7280">Eligible employees are those assigned to this branch at the period start date.</small>
@@ -104,5 +113,8 @@ $errors ??= [];
     }
 
     monthSel.addEventListener('change', filterPeriods);
+    if (monthSel.value !== '') {
+        filterPeriods(); // pre-selected month (Create run link)
+    }
 }());
 </script>

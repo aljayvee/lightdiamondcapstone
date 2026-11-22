@@ -12,7 +12,7 @@ $input = $input ?? [];
 
 <div class="page-header">
     <h1>Holiday Calendar</h1>
-    <a href="<?= $base ?>/hr/schedules" class="btn btn-secondary">← Schedules</a>
+    <a href="<?= $base ?>/hr/schedules" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Schedules</a>
 </div>
 
 <?php if (!empty($errors)): ?>
@@ -127,7 +127,7 @@ $input = $input ?? [];
                                     <form method="POST"
                                           action="<?= $base ?>/hr/schedules/holidays/<?= (int) $h['holiday_id'] ?>/delete"
                                           style="display:inline;"
-                                          onsubmit="return confirm('Deactivate this holiday?');">
+                                          data-confirm="Deactivate this holiday?">
                                         <input type="hidden" name="_csrf"
                                                value="<?= htmlspecialchars($csrf, ENT_QUOTES) ?>">
                                         <button type="submit" class="btn btn-sm btn-danger">Deactivate</button>

@@ -5,8 +5,9 @@
  * Variables injected by AuthController::showForgotPassword():
  *   string      $csrfField  — rendered hidden CSRF input
  *   string|null $error      — validation error from previous submission
+ *   string|null $notice     — info message (e.g. an old reset link was opened)
  *
- * REQ002: forgot-password email-based reset-link flow.
+ * REQ002: forgot password — a 6-digit code is emailed (replaced the reset link 2026-11-21).
  */
 $base = rtrim((string) ($_ENV['APP_BASE_URL'] ?? ''), '/');
 ?>
@@ -33,8 +34,14 @@ $base = rtrim((string) ($_ENV['APP_BASE_URL'] ?? ''), '/');
 
     <h1>Forgot Password</h1>
     <p class="login-sub">
-        Enter your registered email address and we'll send you a link to reset your password.
+        Enter your registered email address and we'll email you a 6-digit code to reset your password.
     </p>
+
+    <?php if (!empty($notice)): ?>
+        <div class="alert info" role="status">
+            <?= htmlspecialchars((string) $notice, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>
+        </div>
+    <?php endif; ?>
 
     <?php if (!empty($error)): ?>
         <div class="alert error" role="alert">
@@ -56,7 +63,7 @@ $base = rtrim((string) ($_ENV['APP_BASE_URL'] ?? ''), '/');
                placeholder="Enter your registered email address">
 
         <button type="submit" class="btn btn-primary btn-full" style="margin-top:.25rem">
-            Send Reset Link
+            Send Code
         </button>
     </form>
 

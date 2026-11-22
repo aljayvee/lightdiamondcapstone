@@ -21,11 +21,26 @@ final class GeneratedAttendance
         public int $overtimeMinutes,
         public array $punches,
         public array $flags,
+        private ?string $status = null,
     ) {
     }
 
     public function isIncomplete(): bool
     {
         return in_array('INCOMPLETE', $this->flags, true);
+    }
+
+    /** Stored attendance status: Complete, Incomplete or ReviewRequired. */
+    public function status(): string
+    {
+        if ($this->status !== null) {
+            return $this->status;
+        }
+        if ($this->isIncomplete()) {
+            return PunchDayResult::STATUS_INCOMPLETE;
+        }
+        return in_array('MULTI_PUNCH_REVIEW', $this->flags, true)
+            ? PunchDayResult::STATUS_REVIEW_REQUIRED
+            : PunchDayResult::STATUS_COMPLETE;
     }
 }

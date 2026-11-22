@@ -479,13 +479,14 @@ operations and satisfy documentation requirements.
    The system SHALL NOT describe this output as a bank-transfer API/file.
    [REQ073, reframed by Supplemental HR answer, pp. 2–3]
 5. WHEN an approved weekly payroll is disbursed THEN the system SHALL
-   record one pay-to-cash cheque for the aggregate weekly amount and one
-   manually prepared BDO deposit slip per employee; no ATM payroll flow or
-   non-BDO bank flow is currently in scope. [Supplemental HR answer,
-   pp. 2–3]
-6. FOR a payroll period, THE SYSTEM SHALL permit at most one aggregate cheque
-   batch, created only after all included branch runs are `Approved`; each
-   payroll row SHALL have at most one payslip and one deposit slip. [ADR-0002]
+   generate printable BDO transaction slips and a disbursement summary
+   derived directly from approved `payroll` and active `bank_details`
+   records; no ATM payroll flow or non-BDO bank flow is currently in scope.
+   [Supplemental HR answer, pp. 2–3]
+6. FOR a payroll period, each approved payroll row SHALL have at most one
+   payslip (`uq_payslip_payroll_id`), and each active employee bank account
+   SHALL be effective-dated in `bank_details` (`uq_bank_name_acct_from`).
+   [ADR-0002]
 
 ### Requirement 12: Employee Self-Service Portal
 

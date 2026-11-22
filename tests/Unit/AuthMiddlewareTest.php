@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Wbpms\Tests\Unit;
 
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Wbpms\Http\Middleware\AuthMiddleware;
 
@@ -36,9 +38,9 @@ final class AuthMiddlewareTest extends TestCase
     // -----------------------------------------------------------------------
 
     /**
-     * @test
      * Setting a valid identity and reading it back returns the same data.
      */
+    #[Test]
     public function it_stores_and_retrieves_identity(): void
     {
         // Simulate session start by manually populating after setIdentity.
@@ -63,9 +65,9 @@ final class AuthMiddlewareTest extends TestCase
     }
 
     /**
-     * @test
      * identity() returns null when no session key is present.
      */
+    #[Test]
     public function it_returns_null_when_no_session(): void
     {
         $_SESSION = [];
@@ -80,13 +82,13 @@ final class AuthMiddlewareTest extends TestCase
     // -----------------------------------------------------------------------
 
     /**
-     * @test
      * ADR-0001: Session expired by idle TTL (30 minutes) returns null.
      *
      * We can only test the session data shape here because identity() returns
      * null immediately under CLI SAPI. The expiry logic in identity() is
      * tested via the session timestamp values.
      */
+    #[Test]
     public function session_auth_data_respects_idle_ttl_field(): void
     {
         $pastTime = time() - 1801; // 30 minutes + 1 second ago
@@ -108,9 +110,9 @@ final class AuthMiddlewareTest extends TestCase
     }
 
     /**
-     * @test
      * ADR-0001: Session expired by absolute TTL (12 hours) returns null.
      */
+    #[Test]
     public function session_auth_data_respects_absolute_ttl_field(): void
     {
         $twelveHoursAgo = time() - 43201;
@@ -132,9 +134,9 @@ final class AuthMiddlewareTest extends TestCase
     // -----------------------------------------------------------------------
 
     /**
-     * @test
      * destroySession() clears the CSRF token from the session.
      */
+    #[Test]
     public function it_clears_csrf_token_on_destroy(): void
     {
         $_SESSION = [
@@ -157,7 +159,6 @@ final class AuthMiddlewareTest extends TestCase
     // -----------------------------------------------------------------------
 
     /**
-     * @test
      * ADR-0001: when the idle TTL is exceeded, identity() destroys the session
      * and returns null. The _auth key must be absent from $_SESSION.
      *
@@ -165,6 +166,7 @@ final class AuthMiddlewareTest extends TestCase
      * only in HTTP context (not CLI), so we verify the session state that the
      * redirect path depends on: after expiry the _auth key is gone.
      */
+    #[Test]
     public function identity_clears_auth_key_when_idle_ttl_exceeded(): void
     {
         $this->seedSession([
@@ -187,10 +189,10 @@ final class AuthMiddlewareTest extends TestCase
     }
 
     /**
-     * @test
      * ADR-0001: when the absolute TTL (12 h) is exceeded, the session must be
      * treated as expired regardless of recent activity.
      */
+    #[Test]
     public function identity_clears_auth_key_when_absolute_ttl_exceeded(): void
     {
         $this->seedSession([
@@ -215,13 +217,13 @@ final class AuthMiddlewareTest extends TestCase
     // -----------------------------------------------------------------------
 
     /**
-     * @test
-     * @dataProvider roleMatrixProvider
      * REQN007: verify that requireRoles() is implemented with correct role values.
      *
      * Under CLI SAPI, requireRoles() returns without checking — we verify the
      * allowed roles are stored correctly in the session for the HTTP path.
      */
+    #[Test]
+    #[DataProvider('roleMatrixProvider')]
     public function role_names_in_session_match_expected_values(string $roleName): void
     {
         $this->seedSession([

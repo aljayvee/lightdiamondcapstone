@@ -1,4 +1,7 @@
 <?php
+
+declare(strict_types=1);
+
 use Wbpms\Http\View\Formatter;
 /**
  * @var array[]  $rows
@@ -66,7 +69,7 @@ $roleName       ??= '';
                 <?php endforeach; ?>
             </select>
         </div>
-        <button type="submit" class="btn btn-secondary">Filter</button>
+        <button type="submit" class="btn btn-secondary">Apply Filters</button>
         <?php if ($filterUsername !== '' || $filterStatus !== '' || $filterPosition !== ''): ?>
         <a href="<?= $base ?>/users" class="btn btn-secondary">Clear</a>
         <?php endif; ?>
@@ -77,8 +80,8 @@ $roleName       ??= '';
     <table id="usersTable">
         <thead>
             <tr>
-                <th>USERNAME</th><th>EMAIL</th><th>ROLE</th>
-                <th>LINKED EMPLOYEE</th><th>STATUS</th><th>CREATED</th><th>ACTIONS</th>
+                <th>Username</th><th>Email</th><th>Role</th>
+                <th>Linked Employee</th><th>Status</th><th>Created</th><th>Actions</th>
             </tr>
         </thead>
         <tbody>
@@ -96,16 +99,22 @@ $roleName       ??= '';
         ?>
             <tr>
                 <td style="font-weight:700"><?= $unameDisplay ?></td>
-                <td><?= $r['account_email'] !== '' && $r['account_email'] !== null ? Formatter::escape($r['account_email']) : '<span class="muted">—</span>' ?></td>
-                <td><?= Formatter::escape($r['role_name'] ?? '—') ?></td>
+                <td>
+                    <?= $r['account_email'] !== '' && $r['account_email'] !== null ? Formatter::escape($r['account_email']) : '<span class="muted">—</span>' ?>
+                    <?php if (array_key_exists('email_verified_at', $r) && $r['email_verified_at'] === null): ?>
+                        <span class="badge warn" style="font-size:10px;margin-left:4px" title="Email address has not been verified yet">Unverified</span>
+                    <?php endif; ?>
+                </td>
+                <td><?= Formatter::escape(Formatter::label($r['role_name'] ?? null)) ?></td>
                 <td class="muted"><?= Formatter::escape($r['employee_name'] ?? '—') ?></td>
                 <td><span class="badge <?= $badge ?>"><?= Formatter::escape($r['status']) ?></span></td>
                 <td><?= Formatter::date($r['created_at']) ?></td>
                 <td>
                     <?php if ($isArchived): ?>
+                        <?php if ($roleName === 'BusinessOwner'): ?>
                         <div class="action-menu">
                             <button type="button" class="action-menu-toggle" aria-haspopup="true" aria-expanded="false">
-                                Actions <span class="chevron">▾</span>
+                                Actions <span class="chevron"><?= \Wbpms\Http\View\Icon::svg('chevron-down', 14) ?></span>
                             </button>
                             <div class="action-menu-list" role="menu">
                                 <!-- Unarchive -->
@@ -114,37 +123,41 @@ $roleName       ??= '';
                                     <button type="button" class="item-ok" role="menuitem"
                                             data-confirm
                                             data-form="form-unarchive-<?= $uid ?>"
-                                            data-icon="↩"
+                                            data-icon="undo"
                                             data-title="Unarchive user"
-                                            data-body="Unarchive &lt;strong&gt;<?= $uname ?>&lt;/strong&gt;? The account will be set to Inactive. You can activate it afterwards.">
-                                        ↩ Unarchive
+                                            data-body="Unarchive <?= $uname ?>? The account will be set to Inactive. You can activate it afterwards.">
+                                        <?= \Wbpms\Http\View\Icon::svg('undo') ?> Unarchive
                                     </button>
                                 </form>
                             </div>
                         </div>
+                        <?php else: ?>
+                        <span class="muted" style="font-size:13px">—</span>
+                        <?php endif; ?>
 
                     <?php else: ?>
                     <?php
-                        $canEdit    = true;
-                        $canAdmin   = true;
-                        $hasActions = true;
+                        $canAdmin   = ($roleName === 'BusinessOwner');
+                        $canEdit    = ($roleName === 'BusinessOwner' || ($roleName === 'HRHead' && ($r['role_name'] ?? '') === 'Employee'));
+                        $hasActions = ($canAdmin || $canEdit);
                     ?>
                     <?php if ($hasActions): ?>
                     <div class="action-menu">
                         <button type="button" class="action-menu-toggle" aria-haspopup="true" aria-expanded="false">
-                            Actions <span class="chevron">▾</span>
+                            Actions <span class="chevron"><?= \Wbpms\Http\View\Icon::svg('chevron-down', 14) ?></span>
                         </button>
                         <div class="action-menu-list" role="menu">
 
                             <?php if ($canEdit): ?>
-                            <a href="<?= $base ?>/users/<?= $uid ?>/edit" role="menuitem">✏ Edit</a>
+                            <a href="<?= $base ?>/users/<?= $uid ?>/edit" role="menuitem"><?= \Wbpms\Http\View\Icon::svg('pencil') ?> Edit</a>
                             <?php endif; ?>
 
                             <?php if ($canAdmin): ?>
+                            <?php $isActive = $r['status'] === 'Active'; ?>
+                            <?php if ($uid !== $currentUserId || !$isActive): ?>
                             <div class="menu-divider"></div>
 
                             <!-- Toggle Active / Inactive -->
-                            <?php $isActive = $r['status'] === 'Active'; ?>
                             <form id="form-toggle-<?= $uid ?>" method="POST" action="<?= $base ?>/users/<?= $uid ?>/toggle">
                                 <input type="hidden" name="_csrf" value="<?= htmlspecialchars($csrf ?? '', ENT_QUOTES, 'UTF-8') ?>">
                                 <button type="button"
@@ -152,14 +165,15 @@ $roleName       ??= '';
                                         role="menuitem"
                                         data-confirm
                                         data-form="form-toggle-<?= $uid ?>"
-                                        data-icon="<?= $isActive ? '⏸' : '▶' ?>"
+                                        data-icon="<?= $isActive ? 'user-x' : 'user-check' ?>"
                                         data-title="<?= $isActive ? 'Deactivate user' : 'Activate user' ?>"
                                         data-body="<?= $isActive
-                                            ? "Deactivate &lt;strong&gt;{$uname}&lt;/strong&gt;? They will not be able to log in until reactivated."
-                                            : "Activate &lt;strong&gt;{$uname}&lt;/strong&gt;? They will regain access immediately." ?>">
-                                    <?= $isActive ? '⏸ Deactivate' : '▶ Activate' ?>
+                                            ? "Deactivate {$uname}? They will not be able to log in until reactivated."
+                                            : "Activate {$uname}? They will regain access immediately." ?>">
+                                    <?= $isActive ? \Wbpms\Http\View\Icon::svg('user-x') . ' Deactivate' : \Wbpms\Http\View\Icon::svg('user-check') . ' Activate' ?>
                                 </button>
                             </form>
+                            <?php endif; ?>
 
                             <?php if ($uid !== $currentUserId): ?>
                             <form id="form-archive-<?= $uid ?>" method="POST" action="<?= $base ?>/users/<?= $uid ?>/archive">
@@ -169,10 +183,10 @@ $roleName       ??= '';
                                         role="menuitem"
                                         data-confirm
                                         data-form="form-archive-<?= $uid ?>"
-                                        data-icon="🗄"
+                                        data-icon="archive"
                                         data-title="Archive user"
-                                        data-body="Archive &lt;strong&gt;<?= $uname ?>&lt;/strong&gt;? This will also archive their linked employee record. The account can be restored later by the Business Owner.">
-                                    🗄 Archive
+                                        data-body="Archive <?= $uname ?>? This will also close and archive their linked employee record. The account can be restored later by the Business Owner.">
+                                    <?= \Wbpms\Http\View\Icon::svg('archive') ?> Archive
                                 </button>
                             </form>
                             <?php endif; ?>
@@ -187,12 +201,22 @@ $roleName       ??= '';
                                         role="menuitem"
                                         data-confirm
                                         data-form="form-reset-<?= $uid ?>"
-                                        data-icon="🔑"
+                                        data-icon="key"
                                         data-title="Reset password"
-                                        data-body="Generate a new temporary password for &lt;strong&gt;<?= $uname ?>&lt;/strong&gt;? The user will be required to change it on next login.">
-                                    🔑 Reset Password
+                                        data-body="Generate a new temporary password for <?= $uname ?>? The user will be required to change it on next login.">
+                                    <?= \Wbpms\Http\View\Icon::svg('key') ?> Reset Password
                                 </button>
                             </form>
+
+                            <?php if (array_key_exists('email_verified_at', $r) && $r['email_verified_at'] === null): ?>
+                            <!-- Resend Email Verification -->
+                            <form id="form-verify-<?= $uid ?>" method="POST" action="<?= $base ?>/users/<?= $uid ?>/resend-verification">
+                                <input type="hidden" name="_csrf" value="<?= htmlspecialchars($csrf ?? '', ENT_QUOTES, 'UTF-8') ?>">
+                                <button type="submit" role="menuitem">
+                                    <?= \Wbpms\Http\View\Icon::svg('mail') ?> Resend Verification
+                                </button>
+                            </form>
+                            <?php endif; ?>
                             <?php endif; /* canEdit */ ?>
 
                         </div>
@@ -295,9 +319,9 @@ $roleName       ??= '';
         closeAllMenus();
 
         pendingFormId = btn.getAttribute('data-form');
-        modalIcon.textContent  = btn.getAttribute('data-icon')  || '❓';
+        modalIcon.innerHTML    = (window.WB_ICONS || {})[btn.getAttribute('data-icon')] || (window.WB_ICONS || {}).help || '';
         modalTitle.textContent = btn.getAttribute('data-title') || 'Are you sure?';
-        modalBody.innerHTML    = btn.getAttribute('data-body')  || '';
+        modalBody.textContent  = btn.getAttribute('data-body')  || '';
 
         // Colour the confirm button to match the action severity
         modalOk.className = 'btn btn-primary';

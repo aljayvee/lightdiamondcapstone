@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Wbpms\Tests\Unit;
 
+use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Wbpms\Infrastructure\Database\Connection;
 
@@ -18,9 +19,9 @@ use Wbpms\Infrastructure\Database\Connection;
 final class ConnectionTest extends TestCase
 {
     /**
-     * @test
      * Connection instantiates without error given a valid-looking config.
      */
+    #[Test]
     public function it_instantiates_with_a_config_array(): void
     {
         $connection = new Connection([
@@ -37,9 +38,9 @@ final class ConnectionTest extends TestCase
     }
 
     /**
-     * @test
      * Connection::transaction() commits on success and returns the callback result.
      */
+    #[Test]
     public function it_commits_transaction_on_success(): void
     {
         $pdo = $this->createMock(\PDO::class);
@@ -62,9 +63,9 @@ final class ConnectionTest extends TestCase
     }
 
     /**
-     * @test
      * Connection::transaction() rolls back and re-throws on exception.
      */
+    #[Test]
     public function it_rolls_back_and_rethrows_on_exception(): void
     {
         $pdo = $this->createMock(\PDO::class);
@@ -91,10 +92,10 @@ final class ConnectionTest extends TestCase
     }
 
     /**
-     * @test
      * Attempting to open a connection with invalid credentials throws RuntimeException
      * (not PDOException, so credentials are not exposed in the message).
      */
+    #[Test]
     public function it_throws_runtime_exception_on_connection_failure(): void
     {
         $this->expectException(\RuntimeException::class);

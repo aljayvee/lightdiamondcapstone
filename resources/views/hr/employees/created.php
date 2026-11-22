@@ -9,6 +9,7 @@
  *
  * Variables injected by EmployeeController::store():
  *   string $employeeName  — full name of the newly created employee
+ *   string $employeeNumber — auto-generated employee number (EMP-001, ...)
  *   string $accountEmail  — the employee's email address used as login credential
  *   string $tempPassword  — system-generated temporary password (shown once)
  *
@@ -16,6 +17,7 @@
  * AC8: no email delivery of credentials at this stage.
  *
  * @var string $employeeName
+ * @var string $employeeNumber
  * @var string $accountEmail
  * @var string $tempPassword
  * @var string $base          injected by ViewRenderer
@@ -43,6 +45,12 @@ use Wbpms\Http\View\Formatter;
 
     <table class="data-table" style="margin-bottom:1.5rem">
         <tbody>
+            <?php if (($employeeNumber ?? '') !== ''): ?>
+            <tr>
+                <th scope="row" style="width:40%;font-weight:600">Employee No.</th>
+                <td><code style="font-size:1rem;letter-spacing:.04em"><?= Formatter::escape($employeeNumber) ?></code></td>
+            </tr>
+            <?php endif; ?>
             <tr>
                 <th scope="row" style="width:40%;font-weight:600">Email (Login)</th>
                 <td>
@@ -87,7 +95,7 @@ use Wbpms\Http\View\Formatter;
             Add Another Employee
         </a>
         <a href="<?= $base ?>/hr/employees" class="btn btn-secondary">
-            ← Back to Employee List
+            <?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Employee List
         </a>
     </div>
 

@@ -37,7 +37,7 @@ $val = static function (string $key) use ($old, $user): string {
         <h1><?= $pageTitle ?></h1>
         <p><?= $isEdit ? 'Update account details and role assignment.' : 'Create a new system account.' ?></p>
     </div>
-    <a class="btn btn-secondary" href="<?= $base ?>/users">← Back to Users</a>
+    <a class="btn btn-secondary" href="<?= $base ?>/users"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Users</a>
 </div>
 
 <?php if (!empty($errors)): ?>
@@ -104,7 +104,7 @@ $val = static function (string $key) use ($old, $user): string {
                 <?php foreach ($roles as $role): ?>
                     <option value="<?= (int)$role['role_id'] ?>"
                         <?= (int)($val('role_id') ?: ($user['role_id'] ?? 0)) === (int)$role['role_id'] ? 'selected' : '' ?>>
-                        <?= Formatter::escape($role['role_name']) ?>
+                        <?= Formatter::escape(Formatter::label($role['role_name'])) ?>
                     </option>
                 <?php endforeach; ?>
             </select>
@@ -140,7 +140,7 @@ $val = static function (string $key) use ($old, $user): string {
 
         <div class="form-actions">
             <button type="submit" class="btn btn-primary">
-                <?= $isEdit ? '✓ Save Changes' : '＋ Create User' ?>
+                <?= $isEdit ? \Wbpms\Http\View\Icon::svg('check') . ' Save Changes' : \Wbpms\Http\View\Icon::svg('plus') . ' Create User' ?>
             </button>
             <a class="btn btn-secondary" href="<?= $base ?>/users">Cancel</a>
         </div>

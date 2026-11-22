@@ -50,11 +50,13 @@ class Contribution2026Seeder extends AbstractSeed
         $mscStep          = 500;
 
         // -------------------------------------------------------------------
-        // contribution_policy_version — CONTRIB-2026 / V1
+        // contribution_policy_version — PH-STATUTORY-2026 / V1
         // -------------------------------------------------------------------
+        $policyCode = 'PH-STATUTORY-2026';
         $exists = $this->fetchRow(
-            "SELECT contribution_policy_id FROM contribution_policy_version
-              WHERE policy_code = 'CONTRIB-2026' AND version = 'V1'"
+            "SELECT contribution_policy_id, policy_code FROM contribution_policy_version
+              WHERE policy_code IN ('PH-STATUTORY-2026', 'CONTRIB-2026') AND version = 'V1'
+              ORDER BY policy_code = 'PH-STATUTORY-2026' DESC LIMIT 1"
         );
 
         if ($exists === false) {
@@ -63,12 +65,13 @@ class Contribution2026Seeder extends AbstractSeed
                     (policy_code, version, effective_from, effective_to,
                      demo_only, status, approved_by, approved_at, created_at, updated_at)
                 VALUES
-                    ('CONTRIB-2026', 'V1', '{$effectiveFrom}', NULL,
+                    ('{$policyCode}', 'V1', '{$effectiveFrom}', NULL,
                      FALSE, 'Approved', {$ownerUserId}, '{$now}', '{$now}', '{$now}')
             ");
+            $policyId = $this->fetchContribPolicyId($policyCode, 'V1');
+        } else {
+            $policyId = (int) $exists['contribution_policy_id'];
         }
-
-        $policyId = $this->fetchContribPolicyId('CONTRIB-2026', 'V1');
 
         // -------------------------------------------------------------------
         // sss_bracket — full MSC bracket table per SSS Circular No. 2024-006.
@@ -96,7 +99,8 @@ class Contribution2026Seeder extends AbstractSeed
                     $this->money($salaryFrom),
                     $salaryTo,
                     $this->money($msc * $sssRateEmployee),
-                    $this->money($msc * $sssRateEmployer),
+                    // Employer total includes the EC premium: 10 below MSC 15,000, 30 from 15,000.
+                    $this->money($msc * $sssRateEmployer + ($msc >= 15000 ? 30 : 10)),
                     $this->sqlDate($effectiveFrom),
                     $this->sqlDate($now),
                     $this->sqlDate($now)

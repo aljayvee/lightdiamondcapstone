@@ -70,12 +70,14 @@ final class PayrollAdjustmentService
                         (payroll_id, earning_type, description, quantity, unit_rate, multiplier,
                          amount, calculation_details, created_at)
                      VALUES
-                        (:payroll_id, 'ManualAdjustment', :description, 1, :amount, 1,
+                        (:payroll_id, 'ManualAdjustment', :description, 1, :unit_rate, 1,
                          :amount, :details, :created_at)"
                 );
+                // Each placeholder may appear only once (native prepares, HY093).
                 $stmt->execute([
                     ':payroll_id' => $payrollId,
                     ':description' => 'Manual additional pay: ' . $reason,
+                    ':unit_rate' => $amount,
                     ':amount' => $amount,
                     ':details' => $details,
                     ':created_at' => $now,
@@ -89,12 +91,13 @@ final class PayrollAdjustmentService
                         (payroll_id, deduction_type, description, quantity, unit_rate,
                          amount, calculation_details, created_at)
                      VALUES
-                        (:payroll_id, 'ManualAdjustment', :description, 1, :amount,
+                        (:payroll_id, 'ManualAdjustment', :description, 1, :unit_rate,
                          :amount, :details, :created_at)"
                 );
                 $stmt->execute([
                     ':payroll_id' => $payrollId,
                     ':description' => 'Manual deduction: ' . $reason,
+                    ':unit_rate' => $amount,
                     ':amount' => $amount,
                     ':details' => $details,
                     ':created_at' => $now,

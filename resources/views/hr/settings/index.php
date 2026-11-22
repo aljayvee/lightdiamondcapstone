@@ -61,9 +61,9 @@ $v = static fn(string $key, string $fallback = ''): string =>
 <div style="display:flex;gap:0;border-bottom:2px solid var(--line);margin-bottom:1.5rem">
     <?php
     $tabs = [
-        'positions' => ['⚙', 'Job Positions',    '/hr/settings/positions'],
-        'periods'   => ['📅', 'Payroll Periods',  '/hr/settings/periods'],
-        'holidays'  => ['🎉', 'Holidays',          '/hr/settings/holidays'],
+        'positions' => ['briefcase', 'Job Positions',    '/hr/settings/positions'],
+        'periods'   => ['calendar-days', 'Payroll Periods',  '/hr/settings/periods'],
+        'holidays'  => ['star', 'Holidays',          '/hr/settings/holidays'],
     ];
     foreach ($tabs as $key => [$icon, $label, $href]):
         $isActive = $tab === $key;
@@ -76,7 +76,7 @@ $v = static fn(string $key, string $fallback = ''): string =>
                   margin-bottom:-2px;
                   color:<?= $isActive ? 'var(--accent)' : 'var(--muted)' ?>;
                   transition:color .15s,border-color .15s">
-            <span aria-hidden="true"><?= $icon ?></span>
+            <?= \Wbpms\Http\View\Icon::svg($icon) ?>
             <?= Formatter::escape($label) ?>
         </a>
     <?php endforeach; ?>
@@ -85,7 +85,36 @@ $v = static fn(string $key, string $fallback = ''): string =>
 <!-- =========================================================
      TAB: Job Positions
      ========================================================= -->
-<?php if ($tab === 'positions'): ?>
+<?php if ($tab === 'positions'):
+    $payrollPolicy ??= ['minimum_daily_wage' => 460.00, 'annual_tax_threshold' => 250000.00];
+    $minDailyWage  = (float) ($payrollPolicy['minimum_daily_wage'] ?? 460.00);
+    $annualTaxThr  = (float) ($payrollPolicy['annual_tax_threshold'] ?? 250000.00);
+?>
+
+<div class="card" style="margin-bottom:1.25rem;padding:1rem 1.25rem">
+    <form method="POST" action="<?= $base ?>/hr/settings/policy" style="display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-end;justify-content:space-between">
+        <input type="hidden" name="_csrf" value="<?= htmlspecialchars($csrf ?? '', ENT_QUOTES, 'UTF-8') ?>">
+        <div>
+            <strong style="display:block;font-size:.95rem">DOLE Region XII Minimum Wage &amp; BIR TRAIN Threshold</strong>
+            <small class="muted">Enforced across Employee Create/Edit/Rehire, Position default rates, and Salary Management (Wage Order XII-25: ₱460.00; Wage Order XII-26 Tranche 1: ₱476.00).</small>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:.75rem;align-items:flex-end">
+            <div>
+                <label for="minimum_daily_wage" style="display:block;font-size:.8rem;font-weight:600;margin-bottom:.2rem">Minimum Daily Wage (₱)</label>
+                <input type="number" id="minimum_daily_wage" name="minimum_daily_wage"
+                       value="<?= Formatter::escape(number_format($minDailyWage, 2, '.', '')) ?>"
+                       min="350" max="5000" step="0.01" required style="width:140px">
+            </div>
+            <div>
+                <label for="annual_tax_threshold" style="display:block;font-size:.8rem;font-weight:600;margin-bottom:.2rem">BIR Annual Tax Exempt (₱)</label>
+                <input type="number" id="annual_tax_threshold" name="annual_tax_threshold"
+                       value="<?= Formatter::escape(number_format($annualTaxThr, 2, '.', '')) ?>"
+                       min="0" max="10000000" step="0.01" required style="width:160px">
+            </div>
+            <button type="submit" class="btn btn-secondary">Save Wage Policy</button>
+        </div>
+    </form>
+</div>
 
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
     <p class="muted" style="margin:0">Manage the job titles used when adding or editing an employee.</p>
@@ -103,13 +132,15 @@ $v = static fn(string $key, string $fallback = ''): string =>
 <div class="card" style="padding:0;overflow:hidden">
     <div style="padding:14px 20px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center">
         <strong>All Positions</strong>
-        <div class="local-search-wrap">⌕<input placeholder="Search…" oninput="filterRows(this,'posTable')"></div>
+        <div class="local-search-wrap"><?= \Wbpms\Http\View\Icon::svg('search') ?><input placeholder="Search…" oninput="filterRows(this,'posTable')"></div>
     </div>
     <table class="data-table" id="posTable">
         <thead>
             <tr>
                 <th>Position Title</th>
                 <th>Department / Group</th>
+                <th style="text-align:right">Default Rate</th>
+                <th style="text-align:center">Requires Regular</th>
                 <th style="text-align:center">Sort</th>
                 <th style="text-align:center">Status</th>
                 <th>Actions</th>
@@ -117,7 +148,7 @@ $v = static fn(string $key, string $fallback = ''): string =>
         </thead>
         <tbody>
         <?php if (empty($positions)): ?>
-            <tr><td colspan="5" class="muted" style="text-align:center;padding:2rem">
+            <tr><td colspan="7" class="muted" style="text-align:center;padding:2rem">
                 No positions defined yet. Click <strong>+ Add Position</strong> to get started.
             </td></tr>
         <?php else: foreach ($positions as $p):
@@ -126,6 +157,8 @@ $v = static fn(string $key, string $fallback = ''): string =>
             <tr>
                 <td><strong><?= Formatter::escape($p['position_title']) ?></strong></td>
                 <td class="muted"><?= $p['department'] ? Formatter::escape($p['department']) : '—' ?></td>
+                <td style="text-align:right"><?= isset($p['default_daily_rate']) && $p['default_daily_rate'] !== null ? '₱' . number_format((float) $p['default_daily_rate'], 2) : '—' ?></td>
+                <td style="text-align:center"><?= !empty($p['requires_regular']) ? '<span class="badge info">Regular only</span>' : '<span class="muted">Any</span>' ?></td>
                 <td style="text-align:center"><?= (int) $p['sort_order'] ?></td>
                 <td style="text-align:center">
                     <span class="badge <?= $isActive ? 'ok' : 'off' ?>"><?= $p['status'] ?></span>
@@ -135,12 +168,14 @@ $v = static fn(string $key, string $fallback = ''): string =>
                             data-id="<?= (int) $p['position_id'] ?>"
                             data-title="<?= Formatter::escape($p['position_title']) ?>"
                             data-dept="<?= Formatter::escape((string) $p['department']) ?>"
+                            data-rate="<?= isset($p['default_daily_rate']) && $p['default_daily_rate'] !== null ? Formatter::escape(number_format((float) $p['default_daily_rate'], 2, '.', '')) : '' ?>"
+                            data-reqreg="<?= !empty($p['requires_regular']) ? '1' : '0' ?>"
                             data-sort="<?= (int) $p['sort_order'] ?>">
                         Edit
                     </button>
                     <form method="POST"
                           action="<?= $base ?>/hr/settings/positions/<?= (int) $p['position_id'] ?>/toggle"
-                          onsubmit="return confirm('<?= $isActive ? 'Deactivate' : 'Activate' ?> this position?')">
+                          data-confirm="<?= $isActive ? 'Deactivate' : 'Activate' ?> this position?">
                         <input type="hidden" name="_csrf" value="<?= htmlspecialchars($csrf ?? '', ENT_QUOTES, 'UTF-8') ?>">
                         <button type="submit" class="btn btn-sm <?= $isActive ? 'btn-warn' : 'btn-secondary' ?>">
                             <?= $isActive ? 'Deactivate' : 'Activate' ?>
@@ -174,6 +209,21 @@ $v = static fn(string $key, string $fallback = ''): string =>
                        value="<?= ($editRow === null) ? $v('department') : '' ?>"
                        maxlength="100" placeholder="e.g. Warehouse, Admin, Sales">
                 <small class="muted">Used for grouping in reports only.</small>
+            </div>
+            <div class="form-group" style="margin-bottom:.85rem">
+                <label for="add_default_daily_rate">Default Daily Rate (₱)</label>
+                <input type="number" id="add_default_daily_rate" name="default_daily_rate"
+                       value="<?= ($editRow === null) ? $v('default_daily_rate', '476.00') : '476.00' ?>"
+                       min="460" max="999999.99" step="0.01" placeholder="e.g. 476.00">
+                <?= ($editRow === null) ? $e('default_daily_rate') : '' ?>
+                <small class="muted">Auto-populated when HR selects this position (min ₱460.00).</small>
+            </div>
+            <div class="form-group" style="margin-bottom:.85rem">
+                <label style="display:flex;align-items:center;gap:.45rem;font-weight:500">
+                    <input type="checkbox" id="add_requires_regular" name="requires_regular" value="1"
+                           <?= ($editRow === null && !empty($input['requires_regular'])) ? 'checked' : '' ?>>
+                    Requires Regular employment type (management / key position)
+                </label>
             </div>
             <div class="form-group" style="margin-bottom:1.25rem">
                 <label for="add_sort_order">Sort Order</label>
@@ -211,6 +261,20 @@ $v = static fn(string $key, string $fallback = ''): string =>
                        value="<?= ($editRow !== null) ? $v('department') : '' ?>"
                        maxlength="100">
             </div>
+            <div class="form-group" style="margin-bottom:.85rem">
+                <label for="edit_default_daily_rate">Default Daily Rate (₱)</label>
+                <input type="number" id="edit_default_daily_rate" name="default_daily_rate"
+                       value="<?= ($editRow !== null) ? $v('default_daily_rate', '') : '' ?>"
+                       min="460" max="999999.99" step="0.01">
+                <?= ($editRow !== null) ? $e('default_daily_rate') : '' ?>
+            </div>
+            <div class="form-group" style="margin-bottom:.85rem">
+                <label style="display:flex;align-items:center;gap:.45rem;font-weight:500">
+                    <input type="checkbox" id="edit_requires_regular" name="requires_regular" value="1"
+                           <?= ($editRow !== null && !empty($input['requires_regular'])) ? 'checked' : '' ?>>
+                    Requires Regular employment type (management / key position)
+                </label>
+            </div>
             <div class="form-group" style="margin-bottom:1.25rem">
                 <label for="edit_sort_order">Sort Order</label>
                 <input type="number" id="edit_sort_order" name="sort_order"
@@ -226,12 +290,16 @@ $v = static fn(string $key, string $fallback = ''): string =>
 </div>
 
 <script>
-function openEditModal(id, title, dept, sort) {
+function openEditModal(id, title, dept, sort, rate, reqReg) {
     var form = document.getElementById('editPositionForm');
     form.action = '<?= rtrim($base, '/') ?>/hr/settings/positions/' + id;
     document.getElementById('edit_position_title').value = title;
     document.getElementById('edit_department').value     = dept;
     document.getElementById('edit_sort_order').value     = sort;
+    var rateEl = document.getElementById('edit_default_daily_rate');
+    if (rateEl) rateEl.value = rate || '';
+    var reqEl = document.getElementById('edit_requires_regular');
+    if (reqEl) reqEl.checked = (String(reqReg) === '1');
     openModal('modalEditPosition');
 }
 
@@ -242,7 +310,9 @@ document.querySelectorAll('.js-edit-pos').forEach(function(btn) {
             this.dataset.id,
             this.dataset.title,
             this.dataset.dept,
-            this.dataset.sort
+            this.dataset.sort,
+            this.dataset.rate,
+            this.dataset.reqreg
         );
     });
 });
@@ -251,7 +321,9 @@ openEditModal(
     <?= (int) $editRow ?>,
     <?= json_encode($input['position_title'] ?? '') ?>,
     <?= json_encode($input['department']     ?? '') ?>,
-    <?= (int) ($input['sort_order'] ?? 0) ?>
+    <?= (int) ($input['sort_order'] ?? 0) ?>,
+    <?= json_encode($input['default_daily_rate'] ?? '') ?>,
+    <?= !empty($input['requires_regular']) ? '1' : '0' ?>
 );
 <?php endif; ?>
 </script>
@@ -460,7 +532,7 @@ openEditModal(
     <div class="card" style="padding:0;overflow:hidden">
         <div style="padding:14px 20px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center">
             <strong>All Holidays</strong>
-            <div class="local-search-wrap">⌕<input placeholder="Search…" oninput="filterRows(this,'holTable')"></div>
+            <div class="local-search-wrap"><?= \Wbpms\Http\View\Icon::svg('search') ?><input placeholder="Search…" oninput="filterRows(this,'holTable')"></div>
         </div>
 
         <?php if (empty($holidays)): ?>
@@ -496,7 +568,7 @@ openEditModal(
                                 'Regular'           => 'Regular Holiday (200%)',
                                 'Special'           => 'Special Holiday (100%)',
                                 'SpecialNonWorking' => 'Special Non-Working (130%)',
-                                default             => Formatter::escape($h['holiday_type']),
+                                default             => Formatter::escape(Formatter::label($h['holiday_type'])),
                             };
                         ?>
                         <span class="badge <?= $hBadgeClass ?>">
@@ -513,7 +585,7 @@ openEditModal(
                         <?php if ($hActive): ?>
                         <form method="POST"
                               action="<?= $base ?>/hr/settings/holidays/<?= (int) $h['holiday_id'] ?>/delete"
-                              onsubmit="return confirm('Deactivate this holiday?')">
+                              data-confirm="Deactivate this holiday?">
                             <input type="hidden" name="_csrf" value="<?= htmlspecialchars($csrf ?? '', ENT_QUOTES, 'UTF-8') ?>">
                             <button type="submit" class="btn btn-sm btn-warn">Deactivate</button>
                         </form>

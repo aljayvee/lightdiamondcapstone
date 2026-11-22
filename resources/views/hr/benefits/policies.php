@@ -9,7 +9,7 @@
         <h1>Contribution Policies</h1>
         <p>SSS, PhilHealth, and Pag-IBIG policy versions.</p>
     </div>
-    <a href="<?= $base ?>/hr/benefits" class="btn btn-secondary">← Back to Benefits</a>
+    <a href="<?= $base ?>/hr/benefits" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Benefits</a>
 </div>
 
 <div class="card">
@@ -49,7 +49,7 @@
                     <form method="post" action="<?= $base ?>/hr/benefits/policies/<?= (int)$p['contribution_policy_id'] ?>/approve" style="display:inline">
                         <input type="hidden" name="_csrf" value="<?= htmlspecialchars($csrf) ?>">
                         <button type="submit" class="btn btn-sm btn-primary"
-                                onclick="return confirm('Approve this contribution policy version?')">Approve</button>
+                                data-confirm="Approve this contribution policy version?">Approve</button>
                     </form>
                     <?php endif; ?>
                 </td>

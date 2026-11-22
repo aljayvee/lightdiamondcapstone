@@ -85,7 +85,10 @@
 
         form.addEventListener('change', function (e) {
             var f = e.target;
-            if (f.tagName === 'SELECT' || f.classList.contains('is-invalid')) validate(f);
+            // Date fields are validated as soon as a date is picked from the calendar,
+            // so out-of-range dates (e.g. an under-age birthdate) are flagged without
+            // waiting for the field to lose focus.
+            if (f.tagName === 'SELECT' || f.type === 'date' || f.classList.contains('is-invalid')) validate(f);
         }, true);
 
         form.addEventListener('submit', function (e) {

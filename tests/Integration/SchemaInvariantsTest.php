@@ -643,35 +643,36 @@ final class SchemaInvariantsTest extends IntegrationTestCase
     }
 
     // ===================================================================
-    // 9. DISBURSEMENT BATCH: one per payroll period
+    // 9. BANK DETAILS & JOB POSITION FK: schema invariants
     // ===================================================================
 
     /**
-     * ADR-0002 §14 / UNIQUE(payroll_period_id) on disbursement_batch:
-     * A second disbursement batch for the same payroll period must be rejected.
+     * ADR-0002 §14 / UNIQUE(bank_name, account_number, effective_from) on bank_details:
+     * Duplicate bank account number with the same effective_from must be rejected.
      */
-    public function testDuplicateDisbursementBatchIsRejected(): void
+    public function testDuplicateBankDetailsAccountFromIsRejected(): void
     {
-        $periodId = $this->insertPayrollPeriod('2026-09-04', '2026-09-10', '2026-09-11');
+        $emp1 = $this->insertEmployee();
+        $emp2 = $this->insertEmployee();
 
-        $this->insertDisbursementBatch($periodId, 10000.00);
+        $this->insertBankDetails($emp1, '1234567890', '2026-01-01');
 
         $this->assertDbException(
-            fn () => $this->insertDisbursementBatch($periodId, 15000.00),
-            'second disbursement_batch for same payroll_period'
+            fn () => $this->insertBankDetails($emp2, '1234567890', '2026-01-01'),
+            'duplicate bank_details account_number + effective_from'
         );
     }
 
     /**
-     * One batch per period must be accepted.
+     * Valid bank_details row is accepted.
      */
-    public function testOneDisbursementBatchPerPeriodIsAccepted(): void
+    public function testValidBankDetailsIsAccepted(): void
     {
-        $periodId = $this->insertPayrollPeriod('2026-09-04', '2026-09-10', '2026-09-11');
+        $emp = $this->insertEmployee();
 
         $this->assertDbSuccess(
-            fn () => $this->insertDisbursementBatch($periodId, 10000.00),
-            'one disbursement_batch for a period'
+            fn () => $this->insertBankDetails($emp, '9876543210', '2026-01-01'),
+            'valid bank_details for employee'
         );
     }
 
@@ -977,15 +978,15 @@ final class SchemaInvariantsTest extends IntegrationTestCase
     }
 
     /**
-     * Insert a disbursement_batch row and return its batch_id.
+     * Insert a bank_details row and return its bank_id.
      */
-    private function insertDisbursementBatch(int $periodId, float $total): int
+    private function insertBankDetails(int $employeeId, string $accountNumber, string $effectiveFrom): int
     {
         $stmt = $this->pdo->prepare(
-            "INSERT INTO disbursement_batch (payroll_period_id, cheque_total)
-             VALUES (:per, :tot)"
+            "INSERT INTO bank_details (employee_id, bank_name, account_name, account_number, effective_from, status)
+             VALUES (:emp, 'BDO', 'Test Account', :acct, :from, 'Active')"
         );
-        $stmt->execute([':per' => $periodId, ':tot' => $total]);
+        $stmt->execute([':emp' => $employeeId, ':acct' => $accountNumber, ':from' => $effectiveFrom]);
         return (int) $this->pdo->lastInsertId();
     }
 

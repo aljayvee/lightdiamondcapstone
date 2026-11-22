@@ -19,6 +19,7 @@ use Wbpms\Http\View\Formatter;
 $employee        ??= [];
 $branchHistory   ??= [];
 $salaryHistory   ??= [];
+$lifecycleEvents ??= [];
 $bankDetails     ??= null;
 $currentDocCount ??= 0;
 
@@ -44,7 +45,7 @@ $field = static function (string $label, ?string $value, bool $mono = false) use
 };
 
 $formatDate = static fn(?string $d): ?string =>
-    ($d && $d !== '—') ? date('m/d/Y', strtotime($d)) : null;
+    ($d && $d !== '—') ? date('m/d/y', strtotime($d)) : null;
 
 $formatMoney = static fn(mixed $v): string =>
     '₱' . number_format((float) $v, 2);
@@ -56,7 +57,7 @@ $formatMoney = static fn(mixed $v): string =>
         <span style="font-size:.85rem;color:#6b7280"><?= Formatter::escape((string) $employee['employee_number']) ?></span>
     </div>
     <div style="display:flex;gap:.6rem;flex-wrap:wrap">
-        <a href="<?= $base ?>/hr/employees" class="btn btn-secondary">← Employees</a>
+        <a href="<?= $base ?>/hr/employees" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Employees</a>
         <a href="<?= $base ?>/hr/employees/<?= $empId ?>/edit"     class="btn btn-primary">Edit</a>
         <a href="<?= $base ?>/hr/employees/<?= $empId ?>/documents" class="btn btn-secondary">
             Documents<?= $currentDocCount > 0 ? ' <span class="doc-badge">' . $currentDocCount . '</span>' : '' ?>
@@ -93,7 +94,7 @@ $formatMoney = static fn(mixed $v): string =>
         <h2>Personal Information</h2>
         <?= $field('Last name',      $employee['last_name']) ?>
         <?= $field('First name',     $employee['first_name']) ?>
-        <?= $field('Middle initial', $employee['middle_initial']) ?>
+        <?= $field('Middle name',    $employee['middle_initial']) ?>
         <?= $field('Birthdate',      $formatDate($employee['birthdate'])) ?>
         <?= $field('Contact',        $employee['contact_number']) ?>
         <?= $field('Email',          $employee['email']) ?>
@@ -111,8 +112,28 @@ $formatMoney = static fn(mixed $v): string =>
             <span class="detail-label"></span>
             <span class="detail-value"><?= $statusBadge ?></span>
         </div>
-        <?php if ($employee['contract_review_date']): ?>
-        <?= $field('Contract review due', $formatDate($employee['contract_review_date'])) ?>
+        <?php if (\Wbpms\Domain\Employee\ContractReviewPolicy::needsReview((string) $employee['employee_type'])): ?>
+        <?php
+        // [EMP-024] Review status; the HR Head's bell lists it from 14 days before.
+        $reviewDate  = $employee['contract_review_date'] ? (string) $employee['contract_review_date'] : null;
+        $reviewToday = new \DateTimeImmutable('today', new \DateTimeZone('Asia/Manila'));
+        $reviewDays  = $reviewDate !== null ? \Wbpms\Domain\Employee\ContractReviewPolicy::daysUntil($reviewDate, $reviewToday) : null;
+        $reviewBadge = match (true) {
+            $reviewDays === null || $reviewDays < 0 => 'badge-red',
+            $reviewDays <= \Wbpms\Domain\Employee\ContractReviewPolicy::DUE_SOON_DAYS => 'badge-yellow',
+            default => 'badge-gray',
+        };
+        ?>
+        <?= $field('Contract review due', $reviewDate !== null ? $formatDate($reviewDate) : null) ?>
+        <div class="detail-field" style="margin-top:-.5rem">
+            <span class="detail-label"></span>
+            <span class="detail-value">
+                <span class="badge <?= $reviewBadge ?>"><?= Formatter::escape(\Wbpms\Domain\Employee\ContractReviewPolicy::label($reviewDate, $reviewToday)) ?></span>
+                <?php if ($reviewDays === null || $reviewDays <= \Wbpms\Domain\Employee\ContractReviewPolicy::DUE_SOON_DAYS): ?>
+                <br><small class="muted">To regularise, edit the employee and set the type to Regular. To renew, set a new review date.</small>
+                <?php endif; ?>
+            </span>
+        </div>
         <?php endif; ?>
     </div>
 
@@ -199,7 +220,7 @@ $formatMoney = static fn(mixed $v): string =>
                 <th>Branch</th>
                 <th>From</th>
                 <th>To</th>
-                <th>Transfer reason</th>
+                <th>Transfer Reason</th>
             </tr>
         </thead>
         <tbody>
@@ -225,9 +246,9 @@ $formatMoney = static fn(mixed $v): string =>
     <table class="data-table" style="margin:0">
         <thead>
             <tr>
-                <th>Daily rate</th>
-                <th>Effective from</th>
-                <th>Effective to</th>
+                <th>Daily Rate</th>
+                <th>Effective From</th>
+                <th>Effective To</th>
                 <th>Status</th>
             </tr>
         </thead>
@@ -240,6 +261,39 @@ $formatMoney = static fn(mixed $v): string =>
                 ? Formatter::escape($formatDate((string) $row['effective_to']) ?? '—')
                 : '<span class="badge badge-green">Current</span>' ?></td>
             <td><?= Formatter::escape((string) ($row['status'] ?? '')) ?></td>
+        </tr>
+        <?php endforeach; ?>
+        </tbody>
+    </table>
+</div>
+<?php endif; ?>
+
+<!-- ================================================================== -->
+<!-- Lifecycle Events (Archive / Rehire Audit History)                   -->
+<!-- ================================================================== -->
+<?php if ($lifecycleEvents !== []): ?>
+<h2 class="section-heading">Lifecycle Events (Archive / Rehire)</h2>
+<div class="card" style="padding:0;overflow:hidden;margin-bottom:1.5rem">
+    <table class="data-table" style="margin:0">
+        <thead>
+            <tr>
+                <th>Event</th>
+                <th>Status Transition</th>
+                <th>Effective Date</th>
+                <th>Reason</th>
+                <th>Notes</th>
+                <th>Acted By</th>
+            </tr>
+        </thead>
+        <tbody>
+        <?php foreach ($lifecycleEvents as $ev): ?>
+        <tr>
+            <td><strong><?= Formatter::escape((string) ($ev['event_type'] ?? '')) ?></strong></td>
+            <td><?= Formatter::escape((string) ($ev['previous_status'] ?? '')) ?> → <?= Formatter::escape((string) ($ev['new_status'] ?? '')) ?></td>
+            <td><?= Formatter::escape($formatDate((string) ($ev['effective_date'] ?? '')) ?? '—') ?></td>
+            <td><?= Formatter::escape((string) ($ev['reason'] ?? '—')) ?></td>
+            <td class="muted"><?= Formatter::escape((string) (($ev['notes'] ?? '') !== '' ? $ev['notes'] : '—')) ?></td>
+            <td><?= Formatter::escape((string) ($ev['acted_by_username'] ?? 'HR')) ?></td>
         </tr>
         <?php endforeach; ?>
         </tbody>

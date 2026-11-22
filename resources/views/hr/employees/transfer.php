@@ -15,7 +15,7 @@ $current = htmlspecialchars($employee['branch_name'] ?? '—', ENT_QUOTES);
 
 <div class="page-header">
     <h1>Transfer Employee</h1>
-    <a href="<?= $base ?>/hr/employees/<?= $empId ?>/edit" class="btn btn-secondary">← Back to Employee</a>
+    <a href="<?= $base ?>/hr/employees/<?= $empId ?>/edit" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Employee</a>
 </div>
 
 <?php if (!empty($errors)): ?>
@@ -57,13 +57,22 @@ $current = htmlspecialchars($employee['branch_name'] ?? '—', ENT_QUOTES);
 
             <div class="form-group <?= isset($errors['transfer_date']) ? 'has-error' : '' ?>">
                 <label for="transfer_date">Transfer Date <span class="required">*</span></label>
+                <?php
+                $currentBranchFrom ??= null;
+                $earliestTransfer = \Wbpms\Domain\Employee\EffectiveDateRule::earliestAfter($currentBranchFrom);
+                ?>
                 <input type="date"
                        name="transfer_date"
                        id="transfer_date"
                        class="form-control"
-                       value="<?= htmlspecialchars($_POST['transfer_date'] ?? date('Y-m-d'), ENT_QUOTES) ?>"
+                       value="<?= htmlspecialchars($_POST['transfer_date'] ?? \Wbpms\Domain\Employee\EffectiveDateRule::defaultDate($currentBranchFrom, date('Y-m-d')), ENT_QUOTES) ?>"
+                       <?= $earliestTransfer !== null ? 'min="' . htmlspecialchars($earliestTransfer, ENT_QUOTES) . '"' : '' ?>
                        required>
-                <small class="form-hint">First day on the new branch. The current assignment will be closed the day before.</small>
+                <small class="form-hint">First day on the new branch. The current assignment will be closed the day before.
+                    <?php if ($earliestTransfer !== null): ?>
+                        Earliest date: <strong><?= htmlspecialchars(\Wbpms\Http\View\Formatter::date($earliestTransfer), ENT_QUOTES) ?></strong> (the current branch assignment starts <?= htmlspecialchars(\Wbpms\Http\View\Formatter::date((string) $currentBranchFrom), ENT_QUOTES) ?>).
+                    <?php endif; ?>
+                </small>
                 <?php if (isset($errors['transfer_date'])): ?>
                     <span class="error-text"><?= htmlspecialchars($errors['transfer_date'], ENT_QUOTES) ?></span>
                 <?php endif; ?>

@@ -12,10 +12,11 @@ namespace Wbpms\Domain\Payroll;
  * up to MSC + 249.99. Compensation below 5,250.00 maps to the 5,000.00
  * floor; 34,750.00 and above maps to the 35,000.00 ceiling.
  *
- * Employee share = 5% of MSC, employer share = 10% of MSC (the MPF part
- * above MSC 20,000 is included in these totals). The Employees'
- * Compensation (EC) premium is employer-only: 10.00 below MSC 15,000,
- * 30.00 from MSC 15,000.
+ * Employee share = 5% of MSC. Employer share = 10% of MSC plus the
+ * employer-only Employees' Compensation (EC) premium (10.00 below MSC
+ * 15,000, 30.00 from MSC 15,000), as the employer total in the circular.
+ * The MPF part above MSC 20,000 is included in these totals. `ec` is kept
+ * as a separate key so the premium can still be shown on its own.
  */
 final class SssContributionSchedule
 {
@@ -40,7 +41,7 @@ final class SssContributionSchedule
                 'salary_from'    => $msc === self::MSC_FLOOR ? 0.00 : (float) ($msc - self::HALF_STEP),
                 'salary_to'      => $msc === self::MSC_CEILING ? null : round($msc + self::HALF_STEP - 0.01, 2),
                 'employee_share' => round($msc * self::EMPLOYEE_RATE, 2),
-                'employer_share' => round($msc * self::EMPLOYER_RATE, 2),
+                'employer_share' => round($msc * self::EMPLOYER_RATE + self::ecFor($msc), 2),
                 'ec'             => self::ecFor($msc),
             ];
         }

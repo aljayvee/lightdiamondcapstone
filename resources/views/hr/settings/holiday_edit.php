@@ -20,7 +20,7 @@ $id = (int) $holiday['holiday_id'];
         <h1>Edit Holiday</h1>
         <p>Update the details of this holiday entry.</p>
     </div>
-    <a href="<?= $base ?>/hr/settings/holidays" class="btn btn-secondary">← Back to Holidays</a>
+    <a href="<?= $base ?>/hr/settings/holidays" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Holidays</a>
 </div>
 
 <div style="max-width:520px">

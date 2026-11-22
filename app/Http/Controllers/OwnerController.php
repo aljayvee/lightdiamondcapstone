@@ -10,7 +10,10 @@ use Wbpms\Application\PayrollService;
 use Wbpms\Application\RequestService;
 use Wbpms\Http\Middleware\AuthMiddleware;
 use Wbpms\Http\View\ViewRenderer;
+use Wbpms\Http\View\UserMessage;
 use Wbpms\Infrastructure\Database\Connection;
+use Wbpms\Infrastructure\Persistence\PayrollAttendanceSummaryRepository;
+use Wbpms\Infrastructure\Logging\ErrorLog;
 
 /**
  * OwnerController — Business Owner payroll and request review actions.
@@ -45,7 +48,7 @@ final class OwnerController
         $stmt = $pdo->query(
             "SELECT pr.payroll_run_id AS id,
                     b.branch_name,
-                    CONCAT(pp.period_start, ' – ', pp.period_end) AS period_label,
+                    CONCAT(DATE_FORMAT(pp.period_start, '%m/%d/%y'), ' – ', DATE_FORMAT(pp.period_end, '%m/%d/%y')) AS period_label,
                     pr.status,
                     pr.submitted_at,
                     (SELECT COUNT(*) FROM payroll p WHERE p.payroll_run_id = pr.payroll_run_id)
@@ -63,7 +66,7 @@ final class OwnerController
         $stmt = $pdo->query(
             "SELECT pr.payroll_run_id AS id,
                     b.branch_name,
-                    CONCAT(pp.period_start, ' – ', pp.period_end) AS period_label,
+                    CONCAT(DATE_FORMAT(pp.period_start, '%m/%d/%y'), ' – ', DATE_FORMAT(pp.period_end, '%m/%d/%y')) AS period_label,
                     pr.status,
                     pr.reviewed_at AS actioned_at,
                     COALESCE(pr.net_pay, 0.00) AS net_total
@@ -95,7 +98,7 @@ final class OwnerController
         $stmt = $pdo->prepare(
             "SELECT pr.payroll_run_id,
                     b.branch_name,
-                    CONCAT(pp.period_start, ' – ', pp.period_end) AS period_label,
+                    CONCAT(DATE_FORMAT(pp.period_start, '%m/%d/%y'), ' – ', DATE_FORMAT(pp.period_end, '%m/%d/%y')) AS period_label,
                     pr.status,
                     pr.submitted_at,
                     pr.return_reason,
@@ -113,7 +116,7 @@ final class OwnerController
 
         if ($run === false) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
@@ -140,7 +143,17 @@ final class OwnerController
         $deductionSummary = $payrollService->runDeductionSummary($id);
         $deductions       = $payrollService->runDeductions($id);
 
+        // Days and hours behind each Basic Pay line (informational only).
+        try {
+            $attendanceByPayroll = (new PayrollAttendanceSummaryRepository($this->makeConnection()))
+                ->forRun($id);
+        } catch (\Throwable $e) {
+            ErrorLog::exception($e, 'owner payroll attendance summary, run ' . $id);
+            $attendanceByPayroll = [];
+        }
+
         ViewRenderer::render('owner/payroll/review', [
+            'attendanceByPayroll' => $attendanceByPayroll,
             'run'              => $run,
             'details'          => $details,
             'earningSummary'   => $earningSummary,
@@ -166,7 +179,7 @@ final class OwnerController
                 ->approve($id, (int) ($identity['user_id'] ?? 0));
             ViewRenderer::flash('Payroll run approved.');
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/owner/payroll');
@@ -200,7 +213,7 @@ final class OwnerController
                 ->returnForRevision($id, (int) ($identity['user_id'] ?? 0), $reason);
             ViewRenderer::flash('Payroll run returned to HR for revision.');
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/owner/payroll');
@@ -258,7 +271,7 @@ final class OwnerController
             $request = $this->makeRequestService()->findOrFail($id);
         } catch (RuntimeException) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
@@ -282,7 +295,7 @@ final class OwnerController
             $this->makeRequestService()->ownerApprove($id, (int) ($identity['user_id'] ?? 0));
             ViewRenderer::flash('Request approved. The employee has been notified.');
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/owner/requests');
@@ -316,7 +329,7 @@ final class OwnerController
             $this->makeRequestService()->ownerReturn($id, (int) ($identity['user_id'] ?? 0), $note);
             ViewRenderer::flash('Request returned to HR for revision.');
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/owner/requests');
@@ -347,7 +360,7 @@ final class OwnerController
             $this->makeRequestService()->ownerCancel($id, (int) ($identity['user_id'] ?? 0), $note);
             ViewRenderer::flash('Request cancelled.');
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/owner/requests');

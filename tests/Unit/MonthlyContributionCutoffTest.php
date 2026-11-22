@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Wbpms\Tests\Unit;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
 use Wbpms\Application\PayrollService;
@@ -11,7 +12,7 @@ use Wbpms\Infrastructure\Database\Connection;
 
 final class MonthlyContributionCutoffTest extends TestCase
 {
-    /** @dataProvider cutoffDates */
+    #[DataProvider('cutoffDates')]
     public function testOnlyFinalFridayPaydayReceivesMonthlyContributions(string $payDate, bool $expected): void
     {
         $service = new PayrollService(new Connection([]));

@@ -55,10 +55,10 @@ $base = rtrim((string) ($_ENV['APP_BASE_URL'] ?? ''), '/');
         <input type="text"
                id="email"
                name="email"
-               value="<?= htmlspecialchars((string) ($_POST['email'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>"
+               value="<?= htmlspecialchars((string) ($oldEmail ?? ($_POST['email'] ?? '')), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>"
                autocomplete="email"
                required
-               autofocus
+               <?= ($oldEmail ?? '') === '' ? 'autofocus' : '' ?>
                placeholder="Enter your email address">
 
         <label for="password">Password</label>
@@ -68,6 +68,7 @@ $base = rtrim((string) ($_ENV['APP_BASE_URL'] ?? ''), '/');
                    name="password"
                    autocomplete="current-password"
                    required
+                   <?= ($oldEmail ?? '') !== '' ? 'autofocus' : '' ?>
                    placeholder="Enter your password">
             <button type="button"
                     id="togglePassword"

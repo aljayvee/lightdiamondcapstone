@@ -1,4 +1,7 @@
 <?php
+
+declare(strict_types=1);
+
 use Wbpms\Http\View\Formatter;
 /**
  * View: hr/attendance/import  (GET + POST /hr/attendance/import)
@@ -32,7 +35,7 @@ $months = [
         <h1>Import Attendance Workbook</h1>
         <p>Upload a biometric device .xls daily-log export.</p>
     </div>
-    <a href="<?= $base ?>/hr/attendance" class="btn btn-secondary">← Back to Attendance</a>
+    <a href="<?= $base ?>/hr/attendance" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Attendance</a>
 </div>
 
 <?php if ($errors !== []): ?>
@@ -56,14 +59,55 @@ $months = [
             <dt class="muted">File</dt><dd style="margin:0"><?= Formatter::escape((string) $preview['fileName']) ?></dd>
             <dt class="muted">Period</dt><dd style="margin:0"><?= Formatter::escape(($months[(int) $preview['sourceMonth']] ?? '?') . ' ' . (int) $preview['sourceYear']) ?></dd>
             <dt class="muted">Punches parsed</dt><dd style="margin:0"><?= (int) $preview['total'] ?></dd>
-            <dt class="muted">Enrollment codes</dt><dd style="margin:0"><?= (int) $preview['employeeCount'] ?></dd>
+            <dt class="muted">Enrollment codes</dt><dd style="margin:0"><?= (int) $preview['employeeCount'] ?> (<?= (int) ($preview['matchedEnrollmentCount'] ?? 0) ?> matched, <?= (int) ($preview['unmatchedEnrollmentCount'] ?? 0) ?> unmatched)</dd>
             <dt class="muted">Date range</dt><dd style="margin:0"><?= Formatter::date($preview['dateFrom'] ?? null) ?> to <?= Formatter::date($preview['dateTo'] ?? null) ?></dd>
         </dl>
+        <?php if (!empty($preview['diagnostics'])): ?>
+        <h4 style="margin:0 0 .5rem;font-size:13px">Dry-Run Biometric Match Diagnostics (Per Enroll ID)</h4>
+        <?php if ((int) ($preview['unmatchedEnrollmentCount'] ?? 0) > 0): ?>
+        <div class="alert alert-error" style="font-size:12px;margin-bottom:.75rem">
+            <?= \Wbpms\Http\View\Icon::svg('alert') ?> <strong><?= (int) $preview['unmatchedEnrollmentCount'] ?></strong> Enroll ID(s) in this workbook will not match an employee yet. Review the failure reason below (e.g., unregistered Enroll ID, hire/effective date after punch date, or device-branch coverage mismatch).
+        </div>
+        <?php endif; ?>
+        <div class="table-wrap" style="max-height:240px;overflow:auto;margin-bottom:1rem">
+            <table style="font-size:12px;width:100%;border-collapse:collapse">
+                <thead><tr>
+                    <th style="text-align:left;padding:6px;border-bottom:1px solid var(--line)">Enroll ID</th>
+                    <th style="text-align:left;padding:6px;border-bottom:1px solid var(--line)">Workbook Name</th>
+                    <th style="text-align:right;padding:6px;border-bottom:1px solid var(--line)">Punches</th>
+                    <th style="text-align:left;padding:6px;border-bottom:1px solid var(--line)">Match Status</th>
+                    <th style="text-align:left;padding:6px;border-bottom:1px solid var(--line)">Matched Employee / Diagnostic Reason</th>
+                </tr></thead>
+                <tbody><?php foreach ($preview['diagnostics'] as $diag):
+                    $isMatched = ($diag['status'] ?? '') === 'matched';
+                ?>
+                    <tr style="<?= !$isMatched ? 'background:#fff1f2' : '' ?>">
+                        <td style="padding:6px;border-bottom:1px solid var(--line)"><code><?= Formatter::escape((string) $diag['code']) ?></code></td>
+                        <td style="padding:6px;border-bottom:1px solid var(--line)"><?= Formatter::escape((string) ($diag['source_name'] ?: '—')) ?></td>
+                        <td style="padding:6px;border-bottom:1px solid var(--line);text-align:right"><?= (int) $diag['punch_count'] ?></td>
+                        <td style="padding:6px;border-bottom:1px solid var(--line)">
+                            <span class="badge <?= $isMatched ? 'badge-green' : 'badge-red' ?>">
+                                <?= Formatter::escape((string) $diag['status']) ?>
+                            </span>
+                        </td>
+                        <td style="padding:6px;border-bottom:1px solid var(--line)">
+                            <?php if ($isMatched): ?>
+                                <strong><?= Formatter::escape((string) ($diag['employee_name'] ?? '')) ?></strong>
+                                (<?= Formatter::escape((string) ($diag['employee_number'] ?? '')) ?> · <?= Formatter::escape((string) ($diag['branch_name'] ?? '')) ?>)
+                            <?php else: ?>
+                                <span style="color:#9f1239"><?= Formatter::escape((string) ($diag['reason'] ?? 'Unmatched')) ?></span>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                <?php endforeach; ?></tbody>
+            </table>
+        </div>
+        <?php endif; ?>
         <div class="table-wrap" style="max-height:330px;overflow:auto;margin-bottom:1rem">
             <table style="font-size:12px;width:100%;border-collapse:collapse">
                 <thead><tr>
-                    <th style="text-align:left;padding:7px;border-bottom:1px solid var(--line)">Workbook row</th>
-                    <th style="text-align:left;padding:7px;border-bottom:1px solid var(--line)">Punch time</th>
+                    <th style="text-align:left;padding:7px;border-bottom:1px solid var(--line)">Workbook Row</th>
+                    <th style="text-align:left;padding:7px;border-bottom:1px solid var(--line)">Punch Time</th>
                     <th style="text-align:left;padding:7px;border-bottom:1px solid var(--line)">Enroll ID</th>
                     <th style="text-align:left;padding:7px;border-bottom:1px solid var(--line)">Name</th>
                 </tr></thead>
@@ -140,7 +184,7 @@ $months = [
             <!-- File picker -->
             <div class="form-group">
                 <label for="attendance_file">
-                    Biometric .xls file <span style="color:var(--bad)">*</span>
+                    Biometric .xls File <span style="color:var(--bad)">*</span>
                 </label>
                 <input type="file"
                        id="attendance_file"
@@ -160,7 +204,7 @@ $months = [
             </div>
 
             <button type="submit" class="btn btn-primary">
-                ↑ Upload &amp; Import
+                <?= \Wbpms\Http\View\Icon::svg('upload') ?> Upload &amp; Import
             </button>
         </form>
         <?php endif; ?>
@@ -168,10 +212,21 @@ $months = [
 
     <!-- ── Recent import batches ───────────────────────────────── -->
     <div class="card">
-        <h3 style="margin:0 0 1.2rem;font-size:16px">Recent Imports</h3>
-        <p class="muted" style="font-size:12px;margin-top:-.7rem">
-            Draft imports are not used by payroll. Approve after review; cancellation is available only before payroll uses the batch.
-        </p>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:.75rem;margin-bottom:1rem;flex-wrap:wrap">
+            <div>
+                <h3 style="margin:0;font-size:16px">Recent Imports</h3>
+                <p class="muted" style="font-size:12px;margin:.25rem 0 0">
+                    Draft imports are not used by payroll. Approve after review; cancellation is available only before payroll uses the batch.
+                </p>
+            </div>
+            <form method="POST" action="<?= $base ?>/hr/attendance/rematch" style="margin:0">
+                <input type="hidden" name="_csrf" value="<?= Formatter::escape($csrf) ?>">
+                <input type="hidden" name="return_to" value="/hr/attendance/import">
+                <button type="submit" class="btn btn-secondary" style="font-size:12px;padding:6px 10px" title="Reconcile previously unmatched punches against updated employee biometric enrollments">
+                    <?= \Wbpms\Http\View\Icon::svg('refresh') ?> Re-match Unmatched Punches
+                </button>
+            </form>
+        </div>
 
         <?php if ($batches === []): ?>
             <p class="muted">No imports yet.</p>
@@ -242,7 +297,7 @@ $months = [
                     </form>
                     <?php endif; ?>
                     <?php if (in_array($batchStatus, ['Draft', 'Approved', 'Completed'], true)): ?>
-                    <form method="POST" action="<?= $base ?>/hr/attendance/import/<?= (int) $b['import_batch_id'] ?>/cancel" style="display:inline" onsubmit="return confirm('Cancel this import? This is only allowed before payroll uses its attendance.');">
+                    <form method="POST" action="<?= $base ?>/hr/attendance/import/<?= (int) $b['import_batch_id'] ?>/cancel" style="display:inline" data-confirm="Cancel this import? This is only allowed before payroll uses its attendance.">
                         <input type="hidden" name="_csrf" value="<?= Formatter::escape($csrf) ?>">
                         <button type="submit" class="btn btn-secondary" style="font-size:12px;padding:4px 7px">Cancel</button>
                     </form>

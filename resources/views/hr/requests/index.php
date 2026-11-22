@@ -53,8 +53,8 @@ $statusColor = static function (string $status): string {
         <p style="margin:0;color:#6b7280;font-size:.875rem">Review and action employee leave, overtime, and cash-advance requests.</p>
     </div>
     <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
-        <a href="<?= $base ?>/hr/requests/leave-credits" class="btn btn-secondary" style="white-space:nowrap">🌿 Leave Credits</a>
-        <a href="<?= $base ?>/hr/requests/cash-advance-tracker" class="btn btn-secondary" style="white-space:nowrap">💵 Cash Advance Balances</a>
+        <a href="<?= $base ?>/hr/requests/leave-credits" class="btn btn-secondary" style="white-space:nowrap"><?= \Wbpms\Http\View\Icon::svg('leaf') ?> Leave Credits</a>
+        <a href="<?= $base ?>/hr/requests/cash-advance-tracker" class="btn btn-secondary" style="white-space:nowrap"><?= \Wbpms\Http\View\Icon::svg('banknote') ?> Cash Advance Balances</a>
         <a href="<?= $base ?>/hr/requests/new" class="btn btn-primary" style="white-space:nowrap">+ New Request</a>
     </div>
 </div>
@@ -89,7 +89,7 @@ $statusColor = static function (string $status): string {
             <?php foreach ($types as $t): ?>
             <option value="<?= (int) $t['request_type_id'] ?>"
                 <?= (int) ($filters['type_id'] ?? 0) === (int) $t['request_type_id'] ? 'selected' : '' ?>>
-                <?= Formatter::escape($t['type_name']) ?>
+                <?= Formatter::escape(Formatter::label($t['type_name'])) ?>
             </option>
             <?php endforeach; ?>
         </select>
@@ -101,7 +101,7 @@ $statusColor = static function (string $status): string {
                placeholder="Name or number…"
                style="padding:.45rem .7rem;border:1px solid #d1d5db;border-radius:4px;font-size:.875rem;min-width:200px">
     </div>
-    <button type="submit" class="btn btn-primary">Filter</button>
+    <button type="submit" class="btn btn-primary">Apply Filters</button>
     <?php if (!empty($filters['status']) || !empty($filters['type_id']) || !empty($filters['search'])): ?>
     <a href="<?= $base ?>/hr/requests" class="btn btn-secondary">Clear</a>
     <?php endif; ?>
@@ -149,7 +149,7 @@ $statusColor = static function (string $status): string {
                 </td>
                 <td style="padding:.65rem 1rem">
                     <span style="background:<?= $statusColor($r['status']) ?>;color:#fff;padding:2px 8px;border-radius:9999px;font-size:.75rem">
-                        <?= Formatter::escape((string) $r['status']) ?>
+                        <?= Formatter::escape($r['status'] === 'HRApproved' ? 'Waiting for Owner' : Formatter::label((string) $r['status'])) ?>
                     </span>
                 </td>
                 <td style="padding:.65rem 1rem;white-space:nowrap">
@@ -162,7 +162,7 @@ $statusColor = static function (string $status): string {
                     <form method="POST"
                           action="<?= $base ?>/hr/requests/<?= (int) $r['request_id'] ?>/approve"
                           style="display:inline"
-                          onsubmit="return confirm('Approve this request?')">
+                          data-confirm="Approve this request?">
                         <input type="hidden" name="_csrf" value="<?= Formatter::escape($csrf) ?>">
                         <button type="submit"
                                 class="btn btn-sm btn-primary"
@@ -170,6 +170,14 @@ $statusColor = static function (string $status): string {
                             Approve
                         </button>
                     </form>
+                    <?php endif; ?>
+                    <?php if (in_array($r['status'], ['Pending', 'Returned', 'HRApproved'], true)): ?>
+                    <a href="<?= $base ?>/hr/requests/<?= (int) $r['request_id'] ?>#cancel"
+                       class="btn btn-sm btn-secondary"
+                       style="font-size:.78rem;padding:.3rem .6rem;margin-left:.3rem"
+                       title="Open the request to give a cancellation note">
+                        Cancel
+                    </a>
                     <?php endif; ?>
                 </td>
             </tr>

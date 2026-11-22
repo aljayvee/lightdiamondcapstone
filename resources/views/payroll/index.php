@@ -18,9 +18,9 @@ use Wbpms\Http\View\Formatter;
     <table id="payrollTable">
         <thead>
             <tr>
-                <th>BRANCH</th><th>PERIOD</th><th>EMPLOYEES</th>
-                <th>GROSS TOTAL</th><th>NET TOTAL</th>
-                <th>STATUS</th><th>CREATED</th>
+                <th>Branch</th><th>Period</th><th>Employees</th>
+                <th>Gross Total</th><th>Net Total</th>
+                <th>Status</th><th>Created</th>
             </tr>
         </thead>
         <tbody>

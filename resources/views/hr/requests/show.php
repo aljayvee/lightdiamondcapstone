@@ -42,7 +42,7 @@ $statusLabel = $statusLabels[$status] ?? $status;
         <h1 style="margin:0 0 .2rem">Request #<?= (int) $request['request_id'] ?></h1>
     </div>
     <div style="display:flex;gap:.5rem;align-items:center">
-        <a href="<?= $base ?>/hr/requests" class="btn btn-secondary">← Back to Requests</a>
+        <a href="<?= $base ?>/hr/requests" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Requests</a>
         <span style="background:<?= $statusColor ?>;color:#fff;padding:4px 14px;border-radius:9999px;font-size:.875rem;font-weight:600">
             <?= Formatter::escape($statusLabel) ?>
         </span>
@@ -86,7 +86,7 @@ $statusLabel = $statusLabels[$status] ?? $status;
             <?php if ($typeName === 'Leave' && isset($request['start_date'])): ?>
             <tr><td colspan="2" style="padding:.5rem 0 0"><hr style="border:0;border-top:1px solid #f3f4f6;margin:0"></td></tr>
             <tr>
-                <th style="text-align:left;padding:.4rem 0;color:#6b7280;font-weight:500">Leave period</th>
+                <th style="text-align:left;padding:.4rem 0;color:#6b7280;font-weight:500">Leave Period</th>
                 <td style="padding:.4rem 0">
                     <?= Formatter::date($request['start_date']) ?>
                     <?php if ($request['start_date'] !== $request['end_date']): ?>
@@ -95,7 +95,7 @@ $statusLabel = $statusLabels[$status] ?? $status;
                 </td>
             </tr>
             <tr>
-                <th style="text-align:left;padding:.4rem 0;color:#6b7280;font-weight:500">Days requested</th>
+                <th style="text-align:left;padding:.4rem 0;color:#6b7280;font-weight:500">Days Requested</th>
                 <td style="padding:.4rem 0"><?= number_format((float) ($request['days_requested'] ?? 0), 2) ?></td>
             </tr>
             <?php endif; ?>
@@ -103,7 +103,7 @@ $statusLabel = $statusLabels[$status] ?? $status;
             <?php if ($typeName === 'Overtime' && isset($request['date_from'])): ?>
             <tr><td colspan="2" style="padding:.5rem 0 0"><hr style="border:0;border-top:1px solid #f3f4f6;margin:0"></td></tr>
             <tr>
-                <th style="text-align:left;padding:.4rem 0;color:#6b7280;font-weight:500">OT period</th>
+                <th style="text-align:left;padding:.4rem 0;color:#6b7280;font-weight:500">OT Period</th>
                 <td style="padding:.4rem 0">
                     <?= Formatter::date($request['date_from']) ?>
                     <?php if ($request['date_from'] !== $request['date_to']): ?>
@@ -132,14 +132,14 @@ $statusLabel = $statusLabels[$status] ?? $status;
             <?php if (!empty($request['review_notes'])): ?>
             <tr><td colspan="2" style="padding:.5rem 0 0"><hr style="border:0;border-top:1px solid #f3f4f6;margin:0"></td></tr>
             <tr>
-                <th style="text-align:left;padding:.4rem 0;color:#6b7280;font-weight:500;vertical-align:top">HR note</th>
+                <th style="text-align:left;padding:.4rem 0;color:#6b7280;font-weight:500;vertical-align:top">HR Note</th>
                 <td style="padding:.4rem 0;white-space:pre-wrap"><?= Formatter::escape((string) $request['review_notes']) ?></td>
             </tr>
             <?php endif; ?>
 
             <?php if (!empty($request['reviewed_at'])): ?>
             <tr>
-                <th style="text-align:left;padding:.4rem 0;color:#6b7280;font-weight:500">HR reviewed</th>
+                <th style="text-align:left;padding:.4rem 0;color:#6b7280;font-weight:500">HR Reviewed</th>
                 <td style="padding:.4rem 0"><?= Formatter::date($request['reviewed_at']) ?></td>
             </tr>
             <?php endif; ?>
@@ -147,14 +147,14 @@ $statusLabel = $statusLabels[$status] ?? $status;
             <?php if (!empty($request['owner_notes'])): ?>
             <tr><td colspan="2" style="padding:.5rem 0 0"><hr style="border:0;border-top:1px solid #f3f4f6;margin:0"></td></tr>
             <tr>
-                <th style="text-align:left;padding:.4rem 0;color:#f97316;font-weight:500;vertical-align:top">Owner note</th>
+                <th style="text-align:left;padding:.4rem 0;color:#f97316;font-weight:500;vertical-align:top">Owner Note</th>
                 <td style="padding:.4rem 0;white-space:pre-wrap;color:#f97316"><?= Formatter::escape((string) $request['owner_notes']) ?></td>
             </tr>
             <?php endif; ?>
 
             <?php if (!empty($request['owner_reviewed_at'])): ?>
             <tr>
-                <th style="text-align:left;padding:.4rem 0;color:#6b7280;font-weight:500">Owner reviewed</th>
+                <th style="text-align:left;padding:.4rem 0;color:#6b7280;font-weight:500">Owner Reviewed</th>
                 <td style="padding:.4rem 0"><?= Formatter::date($request['owner_reviewed_at']) ?></td>
             </tr>
             <?php endif; ?>
@@ -170,10 +170,10 @@ $statusLabel = $statusLabels[$status] ?? $status;
         <form method="POST"
               action="<?= $base ?>/hr/requests/<?= (int) $request['request_id'] ?>/approve"
               style="margin-bottom:1rem"
-              onsubmit="return confirm('Pre-approve this request and send it to the Business Owner for final approval?')">
+              data-confirm="Pre-approve this request and send it to the Business Owner for final approval?">
             <input type="hidden" name="_csrf" value="<?= Formatter::escape($csrf) ?>">
             <button type="submit" class="btn btn-primary" style="width:100%">
-                ✓ Pre-approve &amp; Send to Owner
+                <?= \Wbpms\Http\View\Icon::svg('check') ?> Pre-approve &amp; Send to Owner
             </button>
         </form>
         <p style="font-size:.8rem;color:#6b7280;margin:0 0 1rem">
@@ -181,14 +181,14 @@ $statusLabel = $statusLabels[$status] ?? $status;
         </p>
 
         <!-- HR cancel -->
-        <form method="POST"
+        <form method="POST" id="cancel"
               action="<?= $base ?>/hr/requests/<?= (int) $request['request_id'] ?>/cancel"
-              onsubmit="return confirm('Cancel this request?')">
+              data-confirm="Cancel this request?">
             <input type="hidden" name="_csrf" value="<?= Formatter::escape($csrf) ?>">
             <div style="margin-bottom:.75rem">
                 <label for="review_notes"
                        style="display:block;font-weight:500;font-size:.875rem;margin-bottom:.3rem">
-                    Cancellation note <span style="color:#ef4444">*</span>
+                    Cancellation Note <span style="color:#ef4444">*</span>
                 </label>
                 <textarea id="review_notes" name="review_notes" rows="3"
                           placeholder="Required reason for cancellation…"
@@ -197,7 +197,7 @@ $statusLabel = $statusLabels[$status] ?? $status;
             </div>
             <button type="submit" class="btn btn-danger"
                     style="width:100%;background:#6b7280;color:#fff;border:none;padding:.5rem 1rem;border-radius:6px;cursor:pointer;font-size:.875rem">
-                ✗ Cancel Request
+                <?= \Wbpms\Http\View\Icon::svg('x') ?> Cancel Request
             </button>
         </form>
 
@@ -205,8 +205,28 @@ $statusLabel = $statusLabels[$status] ?? $status;
         <div style="background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;padding:.9rem 1rem;font-size:.875rem;color:#4338ca">
             <strong>Awaiting Owner approval.</strong><br>
             This request has been pre-approved by HR and is in the Business Owner's queue.
-            No further HR action is required unless the Owner returns it.
+            No further HR action is required unless the Owner returns it, or you cancel it below.
         </div>
+        <!-- HR cancel of a pre-approved request (REQ033) -->
+        <form method="POST" id="cancel" style="margin-top:1rem"
+              action="<?= $base ?>/hr/requests/<?= (int) $request['request_id'] ?>/cancel"
+              data-confirm="Cancel this request? It is waiting for the Business Owner; it will be removed from the Owner's queue.">
+            <input type="hidden" name="_csrf" value="<?= Formatter::escape($csrf) ?>">
+            <div style="margin-bottom:.75rem">
+                <label for="review_notes_hrapproved"
+                       style="display:block;font-weight:500;font-size:.875rem;margin-bottom:.3rem">
+                    Cancellation Note <span style="color:#ef4444">*</span>
+                </label>
+                <textarea id="review_notes_hrapproved" name="review_notes" rows="3"
+                          placeholder="Required reason for cancellation…"
+                          style="width:100%;padding:.45rem .7rem;border:1px solid #d1d5db;border-radius:4px;font-size:.875rem;resize:vertical"
+                          required></textarea>
+            </div>
+            <button type="submit" class="btn btn-danger"
+                    style="width:100%;background:#6b7280;color:#fff;border:none;padding:.5rem 1rem;border-radius:6px;cursor:pointer;font-size:.875rem">
+                <?= \Wbpms\Http\View\Icon::svg('x') ?> Cancel Request
+            </button>
+        </form>
 
         <?php else: ?>
         <p style="color:#6b7280;font-size:.875rem;margin:0;text-align:center;padding:1.5rem 0">
@@ -224,7 +244,7 @@ $statusLabel = $statusLabels[$status] ?? $status;
     <form method="POST"
           action="<?= $base ?>/hr/requests/<?= (int) $request['request_id'] ?>/archive"
           style="display:inline"
-          onsubmit="return confirm('Archive this request? It will be hidden from the default list.')">
+          data-confirm="Archive this request? It will be hidden from the default list.">
         <input type="hidden" name="_csrf" value="<?= Formatter::escape($csrf) ?>">
         <button type="submit" class="btn btn-secondary" style="font-size:.8rem">
             Archive Request

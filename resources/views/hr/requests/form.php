@@ -46,7 +46,7 @@ foreach ($types as $t) {
     <div>
         <h1 style="margin:0 0 .2rem">New Request</h1>
     </div>
-    <a href="<?= $base ?>/hr/requests" class="btn btn-secondary">← Back to Requests</a>
+    <a href="<?= $base ?>/hr/requests" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Requests</a>
 </div>
 
 <div class="card" style="max-width:640px;padding:1.5rem">
@@ -89,7 +89,7 @@ foreach ($types as $t) {
         <div class="form-group" style="margin-bottom:1rem">
             <label for="request_type_id"
                    style="display:block;font-weight:500;font-size:.875rem;margin-bottom:.3rem">
-                Request type <span style="color:#dc2626">*</span>
+                Request Type <span style="color:#dc2626">*</span>
             </label>
             <select id="request_type_id" name="request_type_id"
                     style="width:100%;padding:.45rem .7rem;border:1px solid <?= isset($errors['request_type_id']) ? '#dc2626' : '#d1d5db' ?>;border-radius:4px;font-size:.9rem"
@@ -98,7 +98,7 @@ foreach ($types as $t) {
                 <?php foreach ($types as $t): ?>
                 <option value="<?= (int) $t['request_type_id'] ?>"
                     <?= ($selectedType === (string) $t['request_type_id']) ? 'selected' : '' ?>>
-                    <?= Formatter::escape($t['type_name']) ?>
+                    <?= Formatter::escape(Formatter::label($t['type_name'])) ?>
                 </option>
                 <?php endforeach; ?>
             </select>
@@ -110,9 +110,7 @@ foreach ($types as $t) {
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1rem">
                 <div>
                     <label for="start_date"
-                           style="display:block;font-weight:500;font-size:.875rem;margin-bottom:.3rem">
-                        From date
-                    </label>
+                           style="display:block;font-weight:500;font-size:.875rem;margin-bottom:.3rem">From</label>
                     <input type="date" id="start_date" name="start_date"
                            value="<?= $o('start_date') ?>"
                            style="width:100%;padding:.45rem .7rem;border:1px solid <?= isset($errors['start_date']) ? '#dc2626' : '#d1d5db' ?>;border-radius:4px;font-size:.9rem">
@@ -120,15 +118,16 @@ foreach ($types as $t) {
                 </div>
                 <div>
                     <label for="end_date"
-                           style="display:block;font-weight:500;font-size:.875rem;margin-bottom:.3rem">
-                        To date
-                    </label>
+                           style="display:block;font-weight:500;font-size:.875rem;margin-bottom:.3rem">To</label>
                     <input type="date" id="end_date" name="end_date"
                            value="<?= $o('end_date') ?>"
                            style="width:100%;padding:.45rem .7rem;border:1px solid <?= isset($errors['end_date']) ? '#dc2626' : '#d1d5db' ?>;border-radius:4px;font-size:.9rem">
                     <?= $err('end_date') ?>
                 </div>
             </div>
+            <p style="margin:-.5rem 0 1rem;font-size:.8rem;color:#6b7280">
+                Only the employee's scheduled working days are charged. Rest days (Saturday), holidays and days already worked are not counted.
+            </p>
         </div>
 
         <!-- ── Overtime fields ──────────────────────────────────────────── -->
@@ -136,9 +135,7 @@ foreach ($types as $t) {
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:.75rem">
                 <div>
                     <label for="date_from"
-                           style="display:block;font-weight:500;font-size:.875rem;margin-bottom:.3rem">
-                        From date
-                    </label>
+                           style="display:block;font-weight:500;font-size:.875rem;margin-bottom:.3rem">From</label>
                     <input type="date" id="date_from" name="date_from"
                            value="<?= $o('date_from') ?>"
                            style="width:100%;padding:.45rem .7rem;border:1px solid <?= isset($errors['date_from']) ? '#dc2626' : '#d1d5db' ?>;border-radius:4px;font-size:.9rem">
@@ -146,9 +143,7 @@ foreach ($types as $t) {
                 </div>
                 <div>
                     <label for="date_to"
-                           style="display:block;font-weight:500;font-size:.875rem;margin-bottom:.3rem">
-                        To date
-                    </label>
+                           style="display:block;font-weight:500;font-size:.875rem;margin-bottom:.3rem">To</label>
                     <input type="date" id="date_to" name="date_to"
                            value="<?= $o('date_to') ?>"
                            style="width:100%;padding:.45rem .7rem;border:1px solid <?= isset($errors['date_to']) ? '#dc2626' : '#d1d5db' ?>;border-radius:4px;font-size:.9rem">
@@ -159,7 +154,7 @@ foreach ($types as $t) {
                 <div>
                     <label for="start_time"
                            style="display:block;font-weight:500;font-size:.875rem;margin-bottom:.3rem">
-                        Start time
+                        Start Time
                     </label>
                     <input type="text" id="start_time" name="start_time" pattern="(?:[01][0-9]|2[0-3]):[0-5][0-9]"
                            value="<?= $o('start_time') ?>" placeholder="HH:MM"
@@ -169,7 +164,7 @@ foreach ($types as $t) {
                 <div>
                     <label for="end_time"
                            style="display:block;font-weight:500;font-size:.875rem;margin-bottom:.3rem">
-                        End time
+                        End Time
                     </label>
                     <input type="text" id="end_time" name="end_time" pattern="(?:[01][0-9]|2[0-3]):[0-5][0-9]"
                            value="<?= $o('end_time') ?>" placeholder="HH:MM"
@@ -185,7 +180,7 @@ foreach ($types as $t) {
             <div style="max-width:280px;margin-bottom:1rem">
                 <label for="amount_requested"
                        style="display:block;font-weight:500;font-size:.875rem;margin-bottom:.3rem">
-                    Amount requested (₱)
+                    Amount Requested (₱)
                 </label>
                 <input type="number" id="amount_requested" name="amount_requested"
                        value="<?= $o('amount_requested') ?>"
@@ -200,7 +195,7 @@ foreach ($types as $t) {
         <div class="form-group" style="margin-bottom:1.25rem">
             <label for="reason"
                    style="display:block;font-weight:500;font-size:.875rem;margin-bottom:.3rem">
-                Reason / notes <span style="color:#dc2626">*</span>
+                Reason / Notes <span style="color:#dc2626">*</span>
             </label>
             <textarea id="reason" name="reason" rows="4"
                       placeholder="Describe the reason for this request..."

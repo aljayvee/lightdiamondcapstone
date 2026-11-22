@@ -36,10 +36,11 @@ $pv = static function (string $key, string $bankKey = '', string $fallback = '')
 $err = static fn(string $key): string => isset($errors[$key])
     ? '<span class="field-error">' . Formatter::escape($errors[$key]) . '</span>' : '';
 
-// Default effective_from to today if no existing record
-$defaultEffective = $bank !== null
-    ? (string) $bank['effective_from']
-    : date('Y-m-d');
+// Default effective_from to today. With an existing account, never default to
+// a date before it took effect (EMP-026: an earlier date is refused, and the
+// old default — the current account's own date — read as a correction only).
+$currentEffective = $bank !== null ? substr((string) $bank['effective_from'], 0, 10) : '';
+$defaultEffective = max(date('Y-m-d'), $currentEffective);
 
 $BANK_NAMES = ['BDO', 'BPI', 'Metrobank', 'UnionBank', 'Landbank', 'PNB', 'RCBC', 'Security Bank', 'Other'];
 ?>
@@ -50,7 +51,7 @@ $BANK_NAMES = ['BDO', 'BPI', 'Metrobank', 'UnionBank', 'Landbank', 'PNB', 'RCBC'
         <div style="font-size:.875rem;color:#6b7280"><?= $empName ?></div>
     </div>
     <div style="display:flex;gap:.6rem;flex-wrap:wrap">
-        <a href="<?= $base ?>/hr/employees/<?= $empId ?>" class="btn btn-secondary">← Back to Employee</a>
+        <a href="<?= $base ?>/hr/employees/<?= $empId ?>" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Employee</a>
     </div>
 </div>
 
@@ -80,7 +81,7 @@ $BANK_NAMES = ['BDO', 'BPI', 'Metrobank', 'UnionBank', 'Landbank', 'PNB', 'RCBC'
 
         <div class="form-row">
             <div class="form-group">
-                <label for="bank_name">Bank name <span style="color:#dc2626">*</span></label>
+                <label for="bank_name">Bank Name <span style="color:#dc2626">*</span></label>
                 <?php
                 $selectedBank = $pv('bank_name', 'bank_name', 'BDO');
                 $isOther = !in_array($selectedBank, $BANK_NAMES, true) && $selectedBank !== '';
@@ -106,7 +107,7 @@ $BANK_NAMES = ['BDO', 'BPI', 'Metrobank', 'UnionBank', 'Landbank', 'PNB', 'RCBC'
 
         <div class="form-row">
             <div class="form-group">
-                <label for="account_name">Account name <span style="color:#dc2626">*</span></label>
+                <label for="account_name">Account Name <span style="color:#dc2626">*</span></label>
                 <input type="text" id="account_name" name="account_name"
                        value="<?= $pv('account_name') ?>"
                        placeholder="Full name as on the bank account"
@@ -120,18 +121,22 @@ $BANK_NAMES = ['BDO', 'BPI', 'Metrobank', 'UnionBank', 'Landbank', 'PNB', 'RCBC'
 
         <div class="form-row">
             <div class="form-group">
-                <label for="account_number">Account number <span style="color:#dc2626">*</span></label>
+                <label for="account_number">Account Number <span style="color:#dc2626">*</span></label>
                 <input type="text" id="account_number" name="account_number"
                        value="<?= $pv('account_number') ?>"
-                       placeholder="e.g. 1234-5678-90"
+                       placeholder="e.g. 0012-3456-7890"
                        inputmode="numeric"
+                       maxlength="24"
+                       pattern="[0-9][0-9 \-]{8,22}[0-9]"
+                       data-msg-pattern="Use 10 to 16 digits; hyphens and spaces are allowed."
                        required
                        data-msg-required="Account number is required."
                        class="<?= isset($errors['account_number']) ? 'is-invalid' : '' ?>">
                 <?= $err('account_number') ?>
+                <small class="muted">10 to 16 digits (BDO: 10 or 12).</small>
             </div>
             <div class="form-group">
-                <label for="account_type">Account type</label>
+                <label for="account_type">Account Type</label>
                 <?php $currentType = $pv('account_type', 'account_type', ''); ?>
                 <select id="account_type" name="account_type">
                     <option value=""         <?= $currentType === ''         ? 'selected' : '' ?>>— optional —</option>
@@ -144,7 +149,7 @@ $BANK_NAMES = ['BDO', 'BPI', 'Metrobank', 'UnionBank', 'Landbank', 'PNB', 'RCBC'
 
         <div class="form-row">
             <div class="form-group">
-                <label for="effective_from">Effective date <span style="color:#dc2626">*</span></label>
+                <label for="effective_from">Effective Date <span style="color:#dc2626">*</span></label>
                 <input type="date" id="effective_from" name="effective_from"
                        value="<?= isset($_POST['effective_from'])
                            ? Formatter::escape((string) $_POST['effective_from'])
@@ -152,7 +157,12 @@ $BANK_NAMES = ['BDO', 'BPI', 'Metrobank', 'UnionBank', 'Landbank', 'PNB', 'RCBC'
                        required
                        data-msg-required="Effective date is required."
                        class="<?= isset($errors['effective_from']) ? 'is-invalid' : '' ?>">
-                <small class="muted">Date this account becomes active for payroll disbursement.</small>
+                <small class="muted">Date this account becomes active for payroll disbursement.
+                    <?php if ($currentEffective !== ''): ?>
+                    A later date than <?= Formatter::escape(date('m/d/y', (int) strtotime($currentEffective))) ?>
+                    replaces the current account from that date; the same date corrects the current account.
+                    <?php endif; ?>
+                </small>
                 <?= $err('effective_from') ?>
             </div>
         </div>

@@ -6,6 +6,7 @@ namespace Wbpms\Tests\Unit;
 
 use PDO;
 use PDOStatement;
+use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use PHPUnit\Framework\MockObject\MockObject;
 use Wbpms\Application\AuthService;
@@ -72,9 +73,9 @@ final class AuthServiceTest extends TestCase
     // -----------------------------------------------------------------------
 
     /**
-     * @test
      * REQ001: valid credentials return an identity array
      */
+    #[Test]
     public function it_returns_identity_on_valid_credentials(): void
     {
         $hash = password_hash('correct-password', PASSWORD_DEFAULT);
@@ -102,9 +103,9 @@ final class AuthServiceTest extends TestCase
     }
 
     /**
-     * @test
      * REQ001: Business Owner (no employee_id) can log in
      */
+    #[Test]
     public function it_returns_identity_for_business_owner_with_null_employee_id(): void
     {
         $hash = password_hash('owner-pass', PASSWORD_DEFAULT);
@@ -130,9 +131,9 @@ final class AuthServiceTest extends TestCase
     }
 
     /**
-     * @test
      * REQN011: identity includes employee_id when the user is linked to an employee
      */
+    #[Test]
     public function it_returns_employee_id_when_user_has_employee_link(): void
     {
         $hash = password_hash('emp-pass', PASSWORD_DEFAULT);
@@ -161,9 +162,9 @@ final class AuthServiceTest extends TestCase
     // -----------------------------------------------------------------------
 
     /**
-     * @test
      * REQ001: wrong password returns null
      */
+    #[Test]
     public function it_returns_null_on_wrong_password(): void
     {
         $hash = password_hash('correct-password', PASSWORD_DEFAULT);
@@ -279,9 +280,9 @@ final class AuthServiceTest extends TestCase
     }
 
     /**
-     * @test
      * REQ001: unknown username returns null
      */
+    #[Test]
     public function it_returns_null_when_user_does_not_exist(): void
     {
         $pdo        = $this->makePdoWithUser(null); // fetch returns false
@@ -294,9 +295,9 @@ final class AuthServiceTest extends TestCase
     }
 
     /**
-     * @test
      * REQ001: inactive account returns null even with correct credentials
      */
+    #[Test]
     public function it_returns_null_for_inactive_user(): void
     {
         $hash = password_hash('correct-password', PASSWORD_DEFAULT);
@@ -320,9 +321,9 @@ final class AuthServiceTest extends TestCase
     }
 
     /**
-     * @test
      * REQ001: archived account returns null
      */
+    #[Test]
     public function it_returns_null_for_archived_user(): void
     {
         $hash = password_hash('pass', PASSWORD_DEFAULT);
@@ -346,9 +347,9 @@ final class AuthServiceTest extends TestCase
     }
 
     /**
-     * @test
      * REQ001: empty credentials return null (no DB call needed; service handles gracefully)
      */
+    #[Test]
     public function it_returns_null_for_empty_credentials(): void
     {
         // PDO will return false for the empty-string username query
@@ -359,5 +360,66 @@ final class AuthServiceTest extends TestCase
         $identity = $service->attemptLogin('', '');
 
         $this->assertNull($identity);
+    }
+
+    /**
+     * AUTH-019: first-login email OTP is required only while the email is unverified.
+     */
+    #[Test]
+    public function it_requires_email_otp_only_while_email_is_unverified(): void
+    {
+        $row = [
+            'user_id'                      => 9,
+            'username'                     => 'new.employee',
+            'password_hash'                => password_hash('Temp#Pass1', PASSWORD_DEFAULT),
+            'status'                       => 'Active',
+            'employee_id'                  => 12,
+            'role_name'                    => 'Employee',
+            'requires_password_change'     => 1,
+            'email_verified_at'            => null,
+            'email_verification_token_hash' => null,
+        ];
+
+        $first = (new AuthService($this->makeConnection($this->makePdoWithUser($row))))
+            ->attemptLogin('new.employee@example.com', 'Temp#Pass1');
+        self::assertNotNull($first);
+        self::assertTrue($first['requires_password_change']);
+        self::assertTrue($first['requires_email_otp']);
+
+        $row['requires_password_change'] = 0;
+        $row['email_verified_at'] = '2026-11-21 02:00:00';
+        $later = (new AuthService($this->makeConnection($this->makePdoWithUser($row))))
+            ->attemptLogin('new.employee@example.com', 'Temp#Pass1');
+        self::assertNotNull($later);
+        self::assertFalse($later['requires_email_otp']);
+    }
+
+    /**
+     * AUTH-019: the middleware refresh carries the OTP flag too.
+     */
+    #[Test]
+    public function current_identity_reports_pending_email_otp(): void
+    {
+        /** @var PDOStatement&MockObject $stmt */
+        $stmt = $this->createMock(PDOStatement::class);
+        $stmt->method('execute')->willReturn(true);
+        $stmt->method('fetch')->willReturn([
+            'user_id'                  => 9,
+            'username'                 => 'new.employee',
+            'status'                   => 'Active',
+            'employee_id'              => 12,
+            'role_name'                => 'Employee',
+            'requires_password_change' => 0,
+            'email_verified_at'        => null,
+        ]);
+
+        /** @var PDO&MockObject $pdo */
+        $pdo = $this->createMock(PDO::class);
+        $pdo->method('prepare')->willReturn($stmt);
+
+        $identity = (new AuthService($this->makeConnection($pdo)))->currentIdentity(9);
+
+        self::assertNotNull($identity);
+        self::assertTrue($identity['requires_email_otp']);
     }
 }

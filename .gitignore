@@ -61,3 +61,7 @@ Capstone*/
 
 # Semantic review output
 /semantic-review/
+
+# Real biometric exports (employee personal data) and scratch output — keep local
+*.xls
+/probe.txt

@@ -59,7 +59,7 @@ $timeValue = static fn(string $key): string =>
         <div class="card" style="padding:0;overflow:hidden;margin-bottom:1.5rem">
             <div style="padding:14px 20px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center">
                 <strong>Schedule Templates</strong>
-                <div class="local-search-wrap">⌕<input placeholder="Search schedules..." oninput="filterRows(this,'schedTable')"></div>
+                <div class="local-search-wrap"><?= \Wbpms\Http\View\Icon::svg('search') ?><input placeholder="Search schedules..." oninput="filterRows(this,'schedTable')"></div>
             </div>
             <table class="data-table" id="schedTable">
                 <thead>
@@ -114,7 +114,7 @@ $timeValue = static fn(string $key): string =>
                             <form method="POST"
                                   action="<?= $base ?>/hr/schedules/<?= (int) $s['id'] ?>/archive"
                                   style="display:inline"
-                                  onsubmit="return confirm('Archive this schedule? Existing assignments are preserved.')">
+                                  data-confirm="Archive this schedule? Existing assignments are preserved.">
                                 <input type="hidden" name="_csrf" value="<?= htmlspecialchars($csrf ?? '', ENT_QUOTES, 'UTF-8') ?>">
                                 <button type="submit" class="btn btn-secondary" style="padding:4px 10px;font-size:12px">Archive</button>
                             </form>
@@ -122,7 +122,7 @@ $timeValue = static fn(string $key): string =>
                             <form method="POST"
                                   action="<?= $base ?>/hr/schedules/<?= (int) $s['id'] ?>/restore"
                                   style="display:inline"
-                                  onsubmit="return confirm('Restore this schedule to Active?')">
+                                  data-confirm="Restore this schedule to Active?">
                                 <input type="hidden" name="_csrf" value="<?= htmlspecialchars($csrf ?? '', ENT_QUOTES, 'UTF-8') ?>">
                                 <button type="submit" class="btn btn-secondary" style="padding:4px 10px;font-size:12px">Restore</button>
                             </form>
@@ -189,7 +189,7 @@ $timeValue = static fn(string $key): string =>
                 <tr>
                     <td><?= Formatter::escape($h['holiday_name']) ?></td>
                     <td style="white-space:nowrap"><?= Formatter::date($h['holiday_date']) ?></td>
-                    <td><span class="badge <?= $badge ?>"><?= Formatter::escape($h['holiday_type']) ?></span></td>
+                    <td><span class="badge <?= $badge ?>"><?= Formatter::escape(Formatter::label($h['holiday_type'])) ?></span></td>
                 </tr>
             <?php endforeach; endif; ?>
             </tbody>
@@ -334,7 +334,7 @@ $timeValue = static fn(string $key): string =>
             <!-- Notes -->
             <div class="form-group">
                 <label for="notes">Notes / Description <span class="muted">(optional)</span></label>
-                <textarea id="notes" name="notes" rows="2"
+                <textarea id="notes" name="notes" rows="2" maxlength="1000"
                           placeholder="Additional details about this schedule…"
                           style="width:100%;resize:vertical"><?= $v('notes') ?></textarea>
             </div>

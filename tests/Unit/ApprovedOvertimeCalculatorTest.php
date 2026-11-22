@@ -72,4 +72,35 @@ final class ApprovedOvertimeCalculatorTest extends TestCase
 
         self::assertSame(0, $minutes);
     }
+
+    public function testBreakWindowOverlapIsUsedWhenBreakTimesAreProvided(): void
+    {
+        // Full shift crossing 12:00-13:00 break -> deducts 60m break, 60m post-shift OT payable.
+        $fullDay = (new ApprovedOvertimeCalculator())->payableMinutesForAttendance(
+            '08:00:00',
+            '18:00:00',
+            '08:00:00',
+            '17:00:00',
+            60,
+            480,
+            [['start_time' => '17:00:00', 'end_time' => '18:00:00']],
+            '12:00:00',
+            '13:00:00',
+        );
+        self::assertSame(60, $fullDay);
+
+        // Afternoon-only shift (13:00-18:00 = 300m worked, no break crossed) is still below 480m standard.
+        $halfDay = (new ApprovedOvertimeCalculator())->payableMinutesForAttendance(
+            '13:00:00',
+            '18:00:00',
+            '08:00:00',
+            '17:00:00',
+            60,
+            480,
+            [['start_time' => '17:00:00', 'end_time' => '18:00:00']],
+            '12:00:00',
+            '13:00:00',
+        );
+        self::assertSame(0, $halfDay);
+    }
 }

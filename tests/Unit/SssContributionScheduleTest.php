@@ -39,18 +39,18 @@ final class SssContributionScheduleTest extends TestCase
         }
     }
 
-    /** @return array<string, array{int, float, float, float, float}> msc, from, to, EE, ER */
+    /** @return array<string, array{int, float, float, float, float}> msc, from, to, EE, ER (10% + EC) */
     public static function circularRows(): array
     {
         return [
-            'MSC 5,500'  => [5500, 5250.00, 5749.99, 275.00, 550.00],
-            'MSC 12,000' => [12000, 11750.00, 12249.99, 600.00, 1200.00],
-            'MSC 12,500' => [12500, 12250.00, 12749.99, 625.00, 1250.00],
-            'MSC 14,500' => [14500, 14250.00, 14749.99, 725.00, 1450.00],
-            'MSC 15,000' => [15000, 14750.00, 15249.99, 750.00, 1500.00],
-            'MSC 18,500' => [18500, 18250.00, 18749.99, 925.00, 1850.00],
-            'MSC 20,500' => [20500, 20250.00, 20749.99, 1025.00, 2050.00],
-            'MSC 34,500' => [34500, 34250.00, 34749.99, 1725.00, 3450.00],
+            'MSC 5,500'  => [5500, 5250.00, 5749.99, 275.00, 560.00],
+            'MSC 12,000' => [12000, 11750.00, 12249.99, 600.00, 1210.00],
+            'MSC 12,500' => [12500, 12250.00, 12749.99, 625.00, 1260.00],
+            'MSC 14,500' => [14500, 14250.00, 14749.99, 725.00, 1460.00],
+            'MSC 15,000' => [15000, 14750.00, 15249.99, 750.00, 1530.00],
+            'MSC 18,500' => [18500, 18250.00, 18749.99, 925.00, 1880.00],
+            'MSC 20,500' => [20500, 20250.00, 20749.99, 1025.00, 2080.00],
+            'MSC 34,500' => [34500, 34250.00, 34749.99, 1725.00, 3480.00],
         ];
     }
 
@@ -69,6 +69,26 @@ final class SssContributionScheduleTest extends TestCase
         $this->assertSame(10.00, $this->bracketFor(14500)['ec']);
         $this->assertSame(30.00, $this->bracketFor(15000)['ec']);
         $this->assertSame(30.00, $this->bracketFor(35000)['ec']);
+    }
+
+    public function testEmployerShareIsTenPercentPlusEcForEveryBracket(): void
+    {
+        foreach (SssContributionSchedule::brackets() as $row) {
+            $this->assertSame(
+                round($row['msc'] * 0.10 + $row['ec'], 2),
+                $row['employer_share'],
+                "MSC {$row['msc']}: employer share must include EC.",
+            );
+        }
+        $this->assertSame(510.00, $this->bracketFor(5000)['employer_share']);
+        $this->assertSame(3530.00, $this->bracketFor(35000)['employer_share']);
+    }
+
+    public function testEmployeeShareDoesNotIncludeEc(): void
+    {
+        foreach (SssContributionSchedule::brackets() as $row) {
+            $this->assertSame(round($row['msc'] * 0.05, 2), $row['employee_share']);
+        }
     }
 
     /** @return array<string, array{float, int}> */

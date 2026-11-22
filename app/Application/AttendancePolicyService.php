@@ -78,11 +78,14 @@ final class AttendancePolicyService
         $pdo = $this->connection->pdo();
 
         $stmt = $pdo->prepare(
-            "SELECT attendance_date, time_in, time_out, late_minutes, status
-               FROM attendance
-              WHERE employee_id = :id
-                AND attendance_date BETWEEN :from AND :to
-              ORDER BY attendance_date ASC"
+            "SELECT a.attendance_date, a.time_in, a.time_out, a.late_minutes, a.status
+               FROM attendance a
+               LEFT JOIN attendance_import_batch aib ON aib.import_batch_id = a.import_batch_id
+              WHERE a.employee_id = :id
+                AND a.attendance_date BETWEEN :from AND :to
+                AND a.status <> 'Cancelled'
+                AND (a.import_batch_id IS NULL OR aib.status IN ('Draft', 'Approved', 'Completed'))
+              ORDER BY a.attendance_date ASC"
         );
         $stmt->execute([':id' => $employeeId, ':from' => $from, ':to' => $to]);
         $attendance = $stmt->fetchAll();
@@ -203,11 +206,13 @@ final class AttendancePolicyService
                                              ' (+', a.late_minutes, ' min)')
                                       ORDER BY a.attendance_date SEPARATOR ', ')
                              FROM attendance a
+                             LEFT JOIN attendance_import_batch aib ON aib.import_batch_id = a.import_batch_id
                             WHERE a.employee_id = f.employee_id
                               AND a.attendance_date BETWEEN DATE_SUB(f.triggering_date, INTERVAL 3 DAY)
                                                         AND f.triggering_date
                               AND a.late_minutes > 0
                               AND a.status <> 'Cancelled'
+                              AND (a.import_batch_id IS NULL OR aib.status IN ('Draft', 'Approved', 'Completed'))
                        ) END AS late_dates
                   FROM attendance_policy_flag f
                   JOIN employee e ON e.employee_id = f.employee_id"
@@ -259,11 +264,13 @@ final class AttendancePolicyService
                                           ' (+', a.late_minutes, ' min)')
                                    ORDER BY a.attendance_date SEPARATOR ', ')
                           FROM attendance a
+                          LEFT JOIN attendance_import_batch aib ON aib.import_batch_id = a.import_batch_id
                          WHERE a.employee_id = f.employee_id
                            AND a.attendance_date BETWEEN DATE_SUB(f.triggering_date, INTERVAL 3 DAY)
                                                      AND f.triggering_date
                            AND a.late_minutes > 0
                            AND a.status <> 'Cancelled'
+                           AND (a.import_batch_id IS NULL OR aib.status IN ('Draft', 'Approved', 'Completed'))
                     ) END AS late_dates
                FROM attendance_policy_flag f
                JOIN employee e ON e.employee_id = f.employee_id
@@ -543,11 +550,13 @@ final class AttendancePolicyService
             $pdo  = $this->connection->pdo();
 
             $stmt = $pdo->prepare(
-                "SELECT attendance_date, time_in, time_out, late_minutes
-                   FROM attendance
-                  WHERE employee_id = :id
-                    AND attendance_date BETWEEN :from AND :to
-                    AND status <> 'Cancelled'"
+                "SELECT a.attendance_date, a.time_in, a.time_out, a.late_minutes
+                   FROM attendance a
+                   LEFT JOIN attendance_import_batch aib ON aib.import_batch_id = a.import_batch_id
+                  WHERE a.employee_id = :id
+                    AND a.attendance_date BETWEEN :from AND :to
+                    AND a.status <> 'Cancelled'
+                    AND (a.import_batch_id IS NULL OR aib.status IN ('Draft', 'Approved', 'Completed'))"
             );
             $stmt->execute([':id' => (int) $flag['employee_id'], ':from' => $from, ':to' => $to]);
             $rows = [];
@@ -580,9 +589,7 @@ final class AttendancePolicyService
                     (int) $row['late_minutes'],
                 ));
             }
-            if ($evidence !== []) {
-                $flag['late_dates'] = implode(', ', $evidence);
-            }
+            $flag['late_dates'] = $evidence !== [] ? implode(', ', $evidence) : null;
         }
         unset($flag);
 

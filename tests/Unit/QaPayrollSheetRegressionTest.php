@@ -57,6 +57,34 @@ final class QaPayrollSheetRegressionTest extends TestCase
         return $errors;
     }
 
+    // A daily rate of exactly ₱1,000,000.00 is accepted; anything above is rejected.
+    public function testDailyRateAcceptsOneMillionButNotMore(): void
+    {
+        self::assertArrayNotHasKey('daily_rate', $this->validateEmployee(['daily_rate' => '1000000'] + $this->validEmployee(), false));
+        self::assertArrayNotHasKey('daily_rate', $this->validateEmployee(['daily_rate' => '1000000.00'] + $this->validEmployee(), true));
+
+        $errors = $this->validateEmployee(['daily_rate' => '1000000.01'] + $this->validEmployee(), false);
+        self::assertArrayHasKey('daily_rate', $errors);
+        self::assertSame('Daily rate cannot exceed ₱1,000,000.00.', $errors['daily_rate']);
+    }
+
+    // An under-age birthdate is reported on the birthdate field with the age and cutoff date.
+    public function testUnderAgeBirthdateIsReportedWithAgeAndCutoff(): void
+    {
+        $today = new \DateTimeImmutable('today', new \DateTimeZone('Asia/Manila'));
+        $birthdate = $today->modify('-17 years')->format('Y-m-d');
+
+        $errors = $this->validateEmployee(['birthdate' => $birthdate] + $this->validEmployee(), false);
+
+        self::assertArrayHasKey('birthdate', $errors);
+        self::assertStringContainsString('under age (17 years old)', $errors['birthdate']);
+        self::assertStringContainsString($today->modify('-18 years')->format('m/d/y'), $errors['birthdate']);
+
+        // Exactly 18 today is allowed.
+        $eighteen = $today->modify('-18 years')->format('Y-m-d');
+        self::assertArrayNotHasKey('birthdate', $this->validateEmployee(['birthdate' => $eighteen] + $this->validEmployee(), false));
+    }
+
     // QA EMP TC3 — a new employee cannot be saved without biometric enrollment.
     public function testANewEmployeeRequiresBiometricDeviceAndEnrollId(): void
     {
@@ -83,6 +111,49 @@ final class QaPayrollSheetRegressionTest extends TestCase
         $errors = $this->validateEmployee(['enrollment_code' => '12a'] + $this->validEmployee(), false);
         self::assertArrayHasKey('enrollment_code', $errors);
         self::assertArrayNotHasKey('enrollment_code', $this->validateEmployee(['enrollment_code' => '00001'] + $this->validEmployee(), false));
+    }
+
+    // The employee number is auto-generated (EMP-001, ...), so a create form
+    // never reports "Employee number is required". [EMP-020]
+    public function testEmployeeNumberIsNotTypedOnCreate(): void
+    {
+        $errors = $this->validateEmployee(['employee_number' => ''] + $this->validEmployee(), false);
+        self::assertArrayNotHasKey('employee_number', $errors);
+
+    }
+
+    // Two employees saved at the same moment: the uq_employee_number clash is
+    // shown on the employee number with a "save again" hint. [EMP-020]
+    public function testEmployeeNumberClashAsksToSaveAgain(): void
+    {
+        $method = new ReflectionMethod(EmployeeController::class, 'uniqueConstraintErrors');
+        $exception = new PDOException("SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry 'EMP-002' for key 'uq_employee_number'");
+        $exception->errorInfo = ['23000', 1062, "Duplicate entry 'EMP-002' for key 'uq_employee_number'"];
+        (new \ReflectionProperty(\Exception::class, 'code'))->setValue($exception, '23000');
+
+        /** @var array<string, string> $errors */
+        $errors = $method->invoke(new EmployeeController(), $exception);
+        self::assertArrayHasKey('employee_number', $errors);
+        self::assertStringContainsString('Create Employee again', $errors['employee_number']);
+    }
+
+    // Add/Edit Employee must write through the same connection that runs the
+    // transaction; otherwise a failed login provisioning left the employee,
+    // branch, schedule, salary and Enroll ID rows saved. [EMP-022]
+    // (Behaviour was reproduced against MariaDB; this guards the wiring.)
+    public function testEmployeeSavesUseTheTransactionConnection(): void
+    {
+        foreach (['store', 'update'] as $name) {
+            $method = new ReflectionMethod(EmployeeController::class, $name);
+            $lines  = file((string) $method->getFileName());
+            self::assertIsArray($lines);
+            $body = implode('', array_slice($lines, $method->getStartLine() - 1, $method->getEndLine() - $method->getStartLine() + 1));
+
+            self::assertStringNotContainsString('$this->makeRepo()', $body, $name);
+            self::assertSame(1, substr_count($body, '$this->makeConnection()'), $name);
+            self::assertStringContainsString('new EmployeeRepository($connection)', $body, $name);
+            self::assertStringContainsString('$connection->transaction(', $body, $name);
+        }
     }
 
     // QA EMP TC2 / TC11 — unique-key clashes become field errors, not an HTTP 500.

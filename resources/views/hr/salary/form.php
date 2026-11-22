@@ -1,18 +1,32 @@
 ﻿<?php
+use Wbpms\Http\View\Formatter;
 /**
  * View: hr/salary/form
  * Variables: $salary (array|null), $employees, $history (array|null),
- *            $errors, $formTitle, $formAction, $old (array|null)
+ *            $errors, $formTitle, $formAction, $old (array|null), $minimumDailyWage (float|null)
  */
-$old      = $old ?? ($salary ?? []);
-$history  = $history ?? [];
-$isEdit   = $salary !== null;
+$old              = $old ?? ($salary ?? []);
+$history          = $history ?? [];
+$isEdit           = $salary !== null;
+$minimumDailyWage = (float) ($minimumDailyWage ?? 460.00);
+$activeStarts     = $activeStarts ?? [];
+$today            = date('Y-m-d');
+// A new rate must start after the current one (REQ062/063). On Edit the
+// field used to be pre-filled with the current record's own start date,
+// which is always refused.
+$currentStart = $isEdit
+    ? (string) ($activeStarts[(int) $salary['employee_id']] ?? $salary['effective_from'])
+    : ($activeStarts[(int) ($old['employee_id'] ?? 0)] ?? null);
+$earliest     = \Wbpms\Domain\Employee\EffectiveDateRule::earliestAfter($currentStart);
+$dateValue    = isset($_POST['effective_from'])
+    ? (string) $_POST['effective_from']
+    : \Wbpms\Domain\Employee\EffectiveDateRule::defaultDate($currentStart, $today);
 ?>
 <div class="page-head">
     <div>
         <h1><?= htmlspecialchars($formTitle) ?></h1>
     </div>
-    <a href="<?= $base ?>/hr/salary" class="btn btn-secondary">← Back to Salary Management</a>
+    <a href="<?= $base ?>/hr/salary" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Salary Management</a>
 </div>
 
 <?php if ($errors !== []): ?>
@@ -35,7 +49,9 @@ $isEdit   = $salary !== null;
                 <select id="employee_id" name="employee_id" class="form-control" required>
                     <option value="">— Select Employee —</option>
                     <?php foreach ($employees as $e): ?>
+                    <?php $empStart = $activeStarts[(int) $e['employee_id']] ?? null; ?>
                     <option value="<?= (int)$e['employee_id'] ?>"
+                        <?php if ($empStart !== null): ?>data-current="<?= htmlspecialchars($empStart) ?>" data-current-label="<?= htmlspecialchars(Formatter::date($empStart)) ?>" data-earliest="<?= htmlspecialchars((string) \Wbpms\Domain\Employee\EffectiveDateRule::earliestAfter($empStart)) ?>" data-earliest-label="<?= htmlspecialchars(Formatter::date((string) \Wbpms\Domain\Employee\EffectiveDateRule::earliestAfter($empStart))) ?>"<?php endif; ?>
                         <?= (string)($old['employee_id'] ?? '') === (string)$e['employee_id'] ? ' selected' : '' ?>>
                         <?= htmlspecialchars($e['employee_name']) ?>
                     </option>
@@ -54,8 +70,9 @@ $isEdit   = $salary !== null;
                     Daily Rate (₱) <span style="color:#ef4444">*</span>
                 </label>
                 <input type="number" id="daily_rate" name="daily_rate" class="form-control"
-                       step="0.01" min="0.01" required
+                       step="0.01" min="<?= htmlspecialchars(number_format($minimumDailyWage, 2, '.', '')) ?>" max="1000000" required
                        value="<?= htmlspecialchars((string)($old['daily_rate'] ?? '')) ?>">
+                <small style="color:#6b7280">DOLE Region XII minimum daily wage floor: ₱<?= htmlspecialchars(number_format($minimumDailyWage, 2)) ?></small>
             </div>
 
             <div class="form-group" style="margin-bottom:1.25rem">
@@ -63,10 +80,12 @@ $isEdit   = $salary !== null;
                     Effective From <span style="color:#ef4444">*</span>
                 </label>
                 <input type="date" id="effective_from" name="effective_from" class="form-control" required
-                       value="<?= htmlspecialchars((string)($old['effective_from'] ?? date('Y-m-d'))) ?>">
-                <?php if ($isEdit): ?>
-                <small style="color:#6b7280">A new record will be created; the current record will be closed the day before this date.</small>
-                <?php endif; ?>
+                       value="<?= htmlspecialchars($dateValue) ?>"
+                       <?= $earliest !== null ? 'min="' . htmlspecialchars($earliest) . '"' : '' ?>>
+                <small id="effective_from_hint" style="color:#6b7280;display:block">
+                    <?php if ($isEdit): ?>A new record will be created; the current record will be closed the day before this date.<?php endif; ?>
+                    <span data-earliest-hint><?php if ($earliest !== null): ?>Earliest date: <strong><?= htmlspecialchars(Formatter::date($earliest)) ?></strong> (the current salary starts <?= htmlspecialchars(Formatter::date((string) $currentStart)) ?>).<?php endif; ?></span>
+                </small>
             </div>
 
             <div style="display:flex;gap:.75rem">
@@ -74,6 +93,37 @@ $isEdit   = $salary !== null;
                 <a href="<?= $base ?>/hr/salary" class="btn btn-secondary">Cancel</a>
             </div>
         </form>
+        <?php if (!$isEdit): ?>
+        <script>
+        // Earliest Effective From follows the chosen employee's current salary (REQ062).
+        (function syncSalaryDateMin() {
+            var select = document.getElementById('employee_id');
+            var date   = document.getElementById('effective_from');
+            var hint   = document.querySelector('[data-earliest-hint]');
+            if (!select || !date || !hint) return;
+            function today() {
+                try { return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila' }).format(new Date()); }
+                catch (e) { return new Date().toISOString().slice(0, 10); }
+            }
+            function apply() {
+                var opt = select.options[select.selectedIndex];
+                var earliest = opt ? opt.getAttribute('data-earliest') : null;
+                if (earliest) {
+                    date.min = earliest;
+                    if (!date.value || date.value < earliest) date.value = earliest > today() ? earliest : today();
+                    if (date.value < earliest) date.value = earliest;
+                    hint.innerHTML = 'Earliest date: <strong>' + opt.getAttribute('data-earliest-label')
+                        + '</strong> (the current salary starts ' + opt.getAttribute('data-current-label') + ').';
+                } else {
+                    date.removeAttribute('min');
+                    hint.textContent = '';
+                }
+            }
+            select.addEventListener('change', apply);
+            apply();
+        })();
+        </script>
+        <?php endif; ?>
     </div>
 
     <?php if ($isEdit && $history !== []): ?>
@@ -92,8 +142,8 @@ $isEdit   = $salary !== null;
             <?php foreach ($history as $h): ?>
             <tr<?= (int)$h['salary_id'] === (int)$salary['salary_id'] ? ' style="background:#f0fdf4"' : '' ?>>
                 <td>₱<?= number_format((float)$h['daily_rate'], 2) ?></td>
-                <td><?= htmlspecialchars($h['effective_from']) ?></td>
-                <td><?= $h['effective_to'] ? htmlspecialchars($h['effective_to']) : '—' ?></td>
+                <td><?= Formatter::date($h['effective_from'] ?? null) ?></td>
+                <td><?= !empty($h['effective_to']) ? Formatter::date($h['effective_to']) : '—' ?></td>
                 <td>
                     <?php $c=['Active'=>'#10b981','Superseded'=>'#f59e0b','Archived'=>'#6b7280'][$h['status']]??'#6b7280'; ?>
                     <span style="background:<?=$c?>;color:#fff;padding:1px 7px;border-radius:9999px;font-size:.7rem"><?= htmlspecialchars($h['status']) ?></span>

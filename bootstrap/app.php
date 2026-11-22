@@ -6,6 +6,7 @@ use Dotenv\Dotenv;
 use Wbpms\Http\Middleware\AuthMiddleware;
 use Wbpms\Http\Routing\Router;
 use Wbpms\Infrastructure\Database\Connection;
+use Wbpms\Infrastructure\Logging\ErrorLog;
 use Wbpms\Infrastructure\Session\DatabaseSessionHandler;
 
 // Load environment variables from .env file if present.
@@ -62,7 +63,15 @@ if ($appEnv === 'development') {
 } else {
     ini_set('display_errors', '0');
     ini_set('display_startup_errors', '0');
-    error_reporting(0);
+    // Report (but never display) everything except deprecations, so warnings
+    // and fatal errors reach the log below instead of being dropped.
+    error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);
+}
+
+// One log file for crashes, caught failures, PHP warnings and error_log()
+// calls (Wbpms\Infrastructure\Logging\ErrorLog). Not under public/.
+if (PHP_SAPI !== 'cli') {
+    ErrorLog::configure(APP_ROOT . '/storage/private/logs/app-error.log');
 }
 
 // Asia/Manila is the business boundary timezone.

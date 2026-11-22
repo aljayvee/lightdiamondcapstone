@@ -60,7 +60,7 @@ $typeLabel = static function (string $type): string {
             HR-review alerts for consecutive lates, tardiness memoranda, and AWOL absences. The system never disciplines employees automatically.
         </p>
     </div>
-    <a href="<?= $base ?>/hr/attendance" class="btn btn-secondary" style="white-space:nowrap;flex-shrink:0">← Back to Attendance</a>
+    <a href="<?= $base ?>/hr/attendance" class="btn btn-secondary" style="white-space:nowrap;flex-shrink:0"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Attendance</a>
 </div>
 
 <!-- Summary cards -->
@@ -121,7 +121,7 @@ $typeLabel = static function (string $type): string {
         <input type="text" name="employee_number" value="<?= Formatter::escape((string) ($filters['employee_number'] ?? '')) ?>"
                placeholder="e.g. E-001" style="padding:.45rem .7rem;border:1px solid #d1d5db;border-radius:4px;font-size:.875rem">
     </div>
-    <button type="submit" class="btn btn-secondary" style="font-size:.875rem;padding:.5rem .9rem">Filter</button>
+    <button type="submit" class="btn btn-secondary" style="font-size:.875rem;padding:.5rem .9rem">Apply Filters</button>
 </form>
 
 <div class="table-card" style="overflow-x:auto">
@@ -224,13 +224,13 @@ $typeLabel = static function (string $type): string {
                             <form method="POST" action="<?= $base ?>/hr/attendance/policy/flags/<?= (int) $r['flag_id'] ?>/review"
                                   style="display:flex;flex-direction:column;gap:.35rem">
                                 <input type="hidden" name="_csrf" value="<?= Formatter::escape($csrf) ?>">
-                                <label style="font-size:.78rem;font-weight:500;color:#374151">Review status</label>
+                                <label style="font-size:.78rem;font-weight:500;color:#374151">Review Status</label>
                                 <select name="status" style="padding:.4rem .6rem;border:1px solid #d1d5db;border-radius:4px;font-size:.8rem">
                                     <?php foreach (['Reviewed', 'Closed'] as $s): ?>
                                     <option value="<?= Formatter::escape($s) ?>" <?= ($r['status'] ?? '') === $s ? 'selected' : '' ?>><?= Formatter::escape($s) ?></option>
                                     <?php endforeach; ?>
                                 </select>
-                                <label style="font-size:.78rem;font-weight:500;color:#374151">Action taken</label>
+                                <label style="font-size:.78rem;font-weight:500;color:#374151">Action Taken</label>
                                 <input type="text" name="action_taken" value="<?= Formatter::escape((string) ($r['action_taken'] ?? '')) ?>"
                                        placeholder="e.g. memorandum issued, warning letter"
                                        maxlength="255" style="padding:.4rem .6rem;border:1px solid #d1d5db;border-radius:4px;font-size:.8rem">
@@ -250,9 +250,9 @@ $typeLabel = static function (string $type): string {
                                               placeholder="Message the employee will see in their portal. Include the required next step."
                                               style="padding:.4rem .6rem;border:1px solid #d1d5db;border-radius:4px;font-size:.8rem"></textarea>
                                 <?php elseif (($r['notice_acknowledged_at'] ?? null) === null): ?>
-                                    <div style="font-size:.78rem;color:#a16207;padding:.3rem 0">📋 Notice issued <?= Formatter::date((string) $r['notice_issued_at']) ?>; awaiting employee acknowledgment.</div>
+                                    <div style="font-size:.78rem;color:#a16207;padding:.3rem 0"><?= \Wbpms\Http\View\Icon::svg('clipboard') ?> Notice issued <?= Formatter::date((string) $r['notice_issued_at']) ?>; awaiting employee acknowledgment.</div>
                                 <?php else: ?>
-                                    <div style="font-size:.78rem;color:#4b5563;padding:.3rem 0">✔ Employee acknowledged <?= Formatter::date((string) $r['notice_acknowledged_at']) ?>.</div>
+                                    <div style="font-size:.78rem;color:#4b5563;padding:.3rem 0"><?= \Wbpms\Http\View\Icon::svg('circle-check') ?> Employee acknowledged <?= Formatter::date((string) $r['notice_acknowledged_at']) ?>.</div>
                                 <?php endif; ?>
                                 <button type="submit" class="btn btn-sm btn-primary" style="font-size:.78rem;padding:.3rem .6rem">Save review</button>
                             </form>

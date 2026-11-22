@@ -16,8 +16,10 @@ use Wbpms\Domain\Attendance\Parsing\UploadedAttendanceFile;
 use Wbpms\Domain\Attendance\TimesheetGenerator;
 use Wbpms\Http\Middleware\AuthMiddleware;
 use Wbpms\Http\View\ViewRenderer;
+use Wbpms\Http\View\UserMessage;
 use Wbpms\Infrastructure\Database\Connection;
 use Wbpms\Infrastructure\Persistence\PdoAttendanceImportGateway;
+use Wbpms\Infrastructure\Logging\ErrorLog;
 
 /**
  * AttendanceController — HR attendance management.
@@ -152,12 +154,47 @@ final class AttendanceController
 
         // Unmatched punches within the same window (filter by source_local_at date part)
         $umStmt = $pdo->prepare(
-            "SELECT COUNT(*) FROM biometric_punch
-              WHERE match_status IN ('unmatched','coverage_exception')
-                AND DATE(source_local_at) BETWEEN :from AND :to"
+            "SELECT COUNT(*) FROM biometric_punch bp
+               LEFT JOIN attendance_import_batch aib ON aib.import_batch_id = bp.import_batch_id
+              WHERE bp.match_status IN ('unmatched','coverage_exception')
+                AND (aib.status IS NULL OR aib.status <> 'Cancelled')
+                AND DATE(bp.source_local_at) BETWEEN :from AND :to"
         );
         $umStmt->execute([':from' => $dateFrom, ':to' => $dateTo]);
         $unmatched = (int) $umStmt->fetchColumn();
+
+        $umListStmt = $pdo->prepare(
+            "SELECT bp.device_id,
+                    COALESCE(bd.device_name, CONCAT('Device #', bp.device_id)) AS device_name,
+                    bp.device_employee_code,
+                    MAX(bp.source_employee_name) AS source_employee_name,
+                    bp.match_status,
+                    COUNT(*) AS punch_count,
+                    MIN(DATE(bp.source_local_at)) AS first_punch_date,
+                    MAX(DATE(bp.source_local_at)) AS last_punch_date
+               FROM biometric_punch bp
+               LEFT JOIN biometric_device bd ON bd.device_id = bp.device_id
+               LEFT JOIN attendance_import_batch aib ON aib.import_batch_id = bp.import_batch_id
+              WHERE bp.match_status IN ('unmatched','coverage_exception')
+                AND (aib.status IS NULL OR aib.status <> 'Cancelled')
+                AND DATE(bp.source_local_at) BETWEEN :from AND :to
+              GROUP BY bp.device_id, bd.device_name, bp.device_employee_code, bp.match_status
+              ORDER BY last_punch_date DESC, bp.device_employee_code ASC
+              LIMIT 50"
+        );
+        $umListStmt->execute([':from' => $dateFrom, ':to' => $dateTo]);
+        $unmatchedPunches = $umListStmt->fetchAll(\PDO::FETCH_ASSOC);
+
+        $lockedStmt = $pdo->prepare(
+            "SELECT pp.period_start, pp.period_end, pr.branch_id
+               FROM payroll_run pr
+               JOIN payroll_period pp ON pp.payroll_period_id = pr.payroll_period_id
+              WHERE pr.status = 'Approved'
+                AND pp.period_start <= :to
+                AND pp.period_end >= :from"
+        );
+        $lockedStmt->execute([':from' => $dateFrom, ':to' => $dateTo]);
+        $lockedPayrollPeriods = $lockedStmt->fetchAll(\PDO::FETCH_ASSOC);
 
         // ---------------------------------------------------------------
         // Main row query — filtered + branch filter + employee search
@@ -178,13 +215,12 @@ final class AttendanceController
         $bind   = [':from' => $dateFrom, ':to' => $dateTo];
 
         if ($search !== '') {
-            $where[] = "(e.last_name LIKE :search_last_name
-                          OR e.first_name LIKE :search_first_name
-                          OR e.employee_number LIKE :search_employee_number)";
-            $searchPattern = '%' . $search . '%';
-            $bind[':search_last_name']       = $searchPattern;
-            $bind[':search_first_name']      = $searchPattern;
-            $bind[':search_employee_number'] = $searchPattern;
+            // Every word in any order: first, middle, last name or number (REQ012).
+            [$nameSql, $nameParams] = \Wbpms\Infrastructure\Persistence\EmployeeNameSearch::condition($search, 'e', 'search_q');
+            if ($nameSql !== '') {
+                $where[] = $nameSql;
+                $bind    = array_merge($bind, $nameParams);
+            }
         }
         if ($branchId !== null) {
             $where[]           = 'eba.branch_id = :branch_id';
@@ -233,12 +269,11 @@ final class AttendanceController
         $employeeWhere = ["e.status = 'Active'"];
         $employeeBind = [];
         if ($search !== '') {
-            $employeeWhere[] = "(e.last_name LIKE :search_last_name
-                                 OR e.first_name LIKE :search_first_name
-                                 OR e.employee_number LIKE :search_employee_number)";
-            $employeeBind[':search_last_name'] = $searchPattern;
-            $employeeBind[':search_first_name'] = $searchPattern;
-            $employeeBind[':search_employee_number'] = $searchPattern;
+            [$nameSql, $nameParams] = \Wbpms\Infrastructure\Persistence\EmployeeNameSearch::condition($search, 'e', 'search_q');
+            if ($nameSql !== '') {
+                $employeeWhere[] = $nameSql;
+                $employeeBind    = array_merge($employeeBind, $nameParams);
+            }
         }
         if ($branchId !== null) {
             $employeeWhere[] = 'eba.branch_id = :branch_id';
@@ -248,6 +283,7 @@ final class AttendanceController
         $employees = $pdo->prepare(
             "SELECT e.employee_id, e.employee_number, e.hire_date,
                     CONCAT(e.last_name, ', ', e.first_name) AS employee_name,
+                    eba.branch_id,
                     b.branch_name
                FROM employee e
                LEFT JOIN employee_branch_assignment eba
@@ -327,6 +363,8 @@ final class AttendanceController
             'complete'    => $complete,
             'incomplete'  => $incomplete,
             'unmatched'   => $unmatched,
+            'unmatchedPunches' => $unmatchedPunches,
+            'lockedPayrollPeriods' => $lockedPayrollPeriods,
             // filter state
             'activeTab'    => $activeTab,
             'monthInput'   => $monthInput,
@@ -384,11 +422,11 @@ final class AttendanceController
             $employeeBind[':branch_id'] = $branchId;
         }
         if ($search !== '') {
-            $employeeWhere[] = '(e.last_name LIKE :search_last OR e.first_name LIKE :search_first OR e.employee_number LIKE :search_number)';
-            $pattern = '%' . $search . '%';
-            $employeeBind[':search_last'] = $pattern;
-            $employeeBind[':search_first'] = $pattern;
-            $employeeBind[':search_number'] = $pattern;
+            [$nameSql, $nameParams] = \Wbpms\Infrastructure\Persistence\EmployeeNameSearch::condition($search, 'e', 'search_q');
+            if ($nameSql !== '') {
+                $employeeWhere[] = $nameSql;
+                $employeeBind    = array_merge($employeeBind, $nameParams);
+            }
         }
         $employeeStmt = $pdo->prepare(
             "SELECT e.employee_id, e.employee_number, e.hire_date,
@@ -424,11 +462,13 @@ final class AttendanceController
                 $attendanceBind[$placeholder] = $employeeId;
             }
             $attendanceStmt = $pdo->prepare(
-                "SELECT employee_id, attendance_date, late_minutes
-                   FROM attendance
-                  WHERE employee_id IN (" . implode(', ', $placeholders) . ")
-                    AND attendance_date BETWEEN :report_from AND :report_to
-                    AND status <> 'Cancelled'"
+                "SELECT a.employee_id, a.attendance_date, a.late_minutes
+                   FROM attendance a
+                   LEFT JOIN attendance_import_batch aib ON aib.import_batch_id = a.import_batch_id
+                  WHERE a.employee_id IN (" . implode(', ', $placeholders) . ")
+                    AND a.attendance_date BETWEEN :report_from AND :report_to
+                    AND a.status <> 'Cancelled'
+                    AND (aib.status IS NULL OR aib.status <> 'Cancelled')"
             );
             $attendanceStmt->execute($attendanceBind);
             foreach ($attendanceStmt->fetchAll() as $attendance) {
@@ -555,6 +595,7 @@ final class AttendanceController
               WHERE esa.employee_id IN (" . implode(', ', $placeholders) . ")
                 AND esa.effective_from <= :date_to
                 AND (esa.effective_to IS NULL OR esa.effective_to >= :date_from)
+                AND (esa.status = 'Active' OR esa.effective_to IS NOT NULL)
               ORDER BY esa.employee_id, esa.effective_from DESC"
         );
         $stmt->execute($params);
@@ -624,23 +665,68 @@ final class AttendanceController
             $params[$monthPlaceholder] = $month;
         }
 
-        $stmt = $pdo->prepare(
-            "SELECT eba.employee_id, eba.effective_from AS assignment_from, eba.effective_to AS assignment_to,
-                    dbb.effective_from AS device_from, dbb.effective_to AS device_to,
-                    aib.source_year, aib.source_month, aib.status
-               FROM attendance_import_batch aib
-               JOIN biometric_device_branch dbb ON dbb.device_id = aib.device_id
-               JOIN employee_branch_assignment eba ON eba.branch_id = dbb.branch_id
-              WHERE eba.employee_id IN (" . implode(', ', $employeePlaceholders) . ")
-                AND aib.status IN ('Draft', 'Processing', 'Approved', 'Completed')
-                AND (" . implode(' OR ', $monthConditions) . ")"
-        );
+        if ($this->hasBatchPunchRangeSchema($pdo)) {
+            $sql = "SELECT eba.employee_id, eba.effective_from AS assignment_from, eba.effective_to AS assignment_to,
+                           dbb.effective_from AS device_from, dbb.effective_to AS device_to,
+                           aib.source_year, aib.source_month,
+                           MAX(CASE WHEN aib.status IN ('Approved', 'Completed') THEN 1 ELSE 0 END) AS has_approved,
+                           MIN(CASE WHEN aib.status IN ('Approved', 'Completed') THEN DATE(bp.source_local_at) ELSE NULL END) AS approved_min,
+                           MAX(CASE WHEN aib.status IN ('Approved', 'Completed') THEN DATE(bp.source_local_at) ELSE NULL END) AS approved_max,
+                           MAX(CASE WHEN aib.status IN ('Draft', 'Processing') THEN 1 ELSE 0 END) AS has_draft,
+                           MIN(DATE(bp.source_local_at)) AS all_min,
+                           MAX(DATE(bp.source_local_at)) AS all_max
+                      FROM attendance_import_batch aib
+                      JOIN biometric_device_branch dbb ON dbb.device_id = aib.device_id
+                      JOIN employee_branch_assignment eba ON eba.branch_id = dbb.branch_id
+                      LEFT JOIN biometric_punch bp ON bp.import_batch_id = aib.import_batch_id
+                     WHERE eba.employee_id IN (" . implode(', ', $employeePlaceholders) . ")
+                       AND aib.status IN ('Draft', 'Processing', 'Approved', 'Completed')
+                       AND (" . implode(' OR ', $monthConditions) . ")
+                     GROUP BY eba.employee_id, eba.effective_from, eba.effective_to,
+                              dbb.effective_from, dbb.effective_to,
+                              aib.device_id, aib.source_year, aib.source_month";
+        } else {
+            $sql = "SELECT eba.employee_id, eba.effective_from AS assignment_from, eba.effective_to AS assignment_to,
+                           dbb.effective_from AS device_from, dbb.effective_to AS device_to,
+                           aib.source_year, aib.source_month,
+                           MAX(CASE WHEN aib.status IN ('Approved', 'Completed') THEN 1 ELSE 0 END) AS has_approved,
+                           NULL AS approved_min,
+                           NULL AS approved_max,
+                           MAX(CASE WHEN aib.status IN ('Draft', 'Processing') THEN 1 ELSE 0 END) AS has_draft,
+                           NULL AS all_min,
+                           NULL AS all_max
+                      FROM attendance_import_batch aib
+                      JOIN biometric_device_branch dbb ON dbb.device_id = aib.device_id
+                      JOIN employee_branch_assignment eba ON eba.branch_id = dbb.branch_id
+                     WHERE eba.employee_id IN (" . implode(', ', $employeePlaceholders) . ")
+                       AND aib.status IN ('Draft', 'Processing', 'Approved', 'Completed')
+                       AND (" . implode(' OR ', $monthConditions) . ")
+                     GROUP BY eba.employee_id, eba.effective_from, eba.effective_to,
+                              dbb.effective_from, dbb.effective_to,
+                              aib.device_id, aib.source_year, aib.source_month";
+        }
+        $stmt = $pdo->prepare($sql);
         $stmt->execute($params);
 
         $coverage = [];
         $priority = ['Draft' => 1, 'Covered' => 2];
         foreach ($stmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
-            $state = in_array((string) $row['status'], ['Approved', 'Completed'], true) ? 'Covered' : 'Draft';
+            $hasApproved = (int) $row['has_approved'] > 0;
+            $hasDraft    = (int) $row['has_draft'] > 0;
+            $allMin      = $row['all_min'] !== null ? (string) $row['all_min'] : null;
+            $allMax      = $row['all_max'] !== null ? (string) $row['all_max'] : null;
+            $approvedMin = $row['approved_min'] !== null ? (string) $row['approved_min'] : $allMin;
+            $approvedMax = $row['approved_max'] !== null ? (string) $row['approved_max'] : $allMax;
+
+            /** @var list<array{0:'Covered'|'Draft', 1:?string, 2:?string}> $ranges */
+            $ranges = [];
+            if ($hasApproved) {
+                $ranges[] = ['Covered', $approvedMin, $approvedMax];
+            }
+            if ($hasDraft) {
+                $ranges[] = ['Draft', $allMin, $allMax];
+            }
+
             foreach ($dates as $date) {
                 if ((int) substr($date, 0, 4) !== (int) $row['source_year']
                     || (int) substr($date, 5, 2) !== (int) $row['source_month']
@@ -651,14 +737,43 @@ final class AttendanceController
                     continue;
                 }
                 $employeeId = (int) $row['employee_id'];
-                $current = $coverage[$employeeId][$date] ?? null;
-                if ($current === null || $priority[$state] > $priority[$current]) {
-                    $coverage[$employeeId][$date] = $state;
+                foreach ($ranges as [$state, $rangeMin, $rangeMax]) {
+                    if (($rangeMin !== null && $date < $rangeMin)
+                        || ($rangeMax !== null && $date > $rangeMax)) {
+                        continue;
+                    }
+                    $current = $coverage[$employeeId][$date] ?? null;
+                    if ($current === null || $priority[$state] > $priority[$current]) {
+                        $coverage[$employeeId][$date] = $state;
+                    }
                 }
             }
         }
 
         return $coverage;
+    }
+
+    private function hasBatchPunchRangeSchema(\PDO $pdo): bool
+    {
+        if ($pdo->getAttribute(\PDO::ATTR_DRIVER_NAME) !== 'sqlite') {
+            return true;
+        }
+        $tableStmt = $pdo->query(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'biometric_punch' LIMIT 1"
+        );
+        if ($tableStmt === false || !(bool) $tableStmt->fetchColumn()) {
+            return false;
+        }
+        $colStmt = $pdo->query('PRAGMA table_info(attendance_import_batch)');
+        if ($colStmt === false) {
+            return false;
+        }
+        foreach ($colStmt->fetchAll(\PDO::FETCH_ASSOC) as $col) {
+            if (($col['name'] ?? '') === 'import_batch_id') {
+                return true;
+            }
+        }
+        return false;
     }
 
     // -----------------------------------------------------------------------
@@ -670,34 +785,7 @@ final class AttendanceController
     {
         // Visiting the upload form abandons any unconfirmed preview.
         $this->clearStagedImport();
-        $pdo = $this->makeConnection()->pdo();
-
-        $batches = $pdo->query(
-            "SELECT aib.import_batch_id,
-                    aib.file_name,
-                    aib.file_checksum,
-                    aib.status,
-                    u.username            AS uploaded_by,
-                    aib.uploaded_at,
-                    aib.records_parsed,
-                    aib.records_matched,
-                    aib.records_unmatched,
-                    aib.duplicates_skipped,
-                    aib.incomplete_days,
-                    aib.multi_punch_days,
-                    aib.completed_at
-               FROM attendance_import_batch aib
-               LEFT JOIN users u ON u.user_id = aib.uploaded_by
-              ORDER BY aib.uploaded_at DESC
-              LIMIT 20"
-        )->fetchAll();
-
-        ViewRenderer::render('hr/attendance/import', [
-            'batches' => $batches,
-            'errors'  => [],
-            'devices' => $this->loadDevices($pdo),
-            'preview' => null,
-        ], 'Import Attendance');
+        $this->renderImport([], null);
     }
 
     // -----------------------------------------------------------------------
@@ -803,8 +891,9 @@ final class AttendanceController
                     }
 
                     $parsed = (new LdeXlsDailyLogParser())->parse($uploadedFile, $context);
-                    $preview = $this->buildPreview($parsed->punches);
+                    $preview = $this->buildPreview($parsed->punches, $gateway, $deviceId);
                     $preview['fileName'] = $origName;
+                    $preview['deviceId'] = $deviceId;
                     $preview['sourceYear'] = $sourceYear;
                     $preview['sourceMonth'] = $sourceMonth;
                     $this->stageImport($storagePath, [
@@ -852,7 +941,8 @@ final class AttendanceController
                     }
 
                 } catch (\Throwable $e) {
-                    $errors[] = 'Import failed: ' . $e->getMessage();
+                    ErrorLog::exception($e, 'attendance import upload');
+                    $errors[] = UserMessage::prefixed('Import failed', $e);
                 } finally {
                     // Always remove the temporary file (ADR-0003)
                     if ($storagePath !== null && file_exists($storagePath)) {
@@ -865,32 +955,7 @@ final class AttendanceController
         }
 
         // Re-render import form with errors
-        $pdo     = $this->makeConnection()->pdo();
-        $batches = $pdo->query(
-            "SELECT aib.import_batch_id,
-                    aib.file_name,
-                    aib.file_checksum,
-                    aib.status,
-                    u.username            AS uploaded_by,
-                    aib.uploaded_at,
-                    aib.records_parsed,
-                    aib.records_matched,
-                    aib.records_unmatched,
-                    aib.duplicates_skipped,
-                    aib.incomplete_days,
-                    aib.multi_punch_days,
-                    aib.completed_at
-               FROM attendance_import_batch aib
-               LEFT JOIN users u ON u.user_id = aib.uploaded_by
-              ORDER BY aib.uploaded_at DESC
-              LIMIT 20"
-        )->fetchAll();
-
-        ViewRenderer::render('hr/attendance/import', [
-            'batches' => $batches,
-            'errors'  => $errors,
-            'devices' => $this->loadDevices($pdo),
-        ], 'Import Attendance');
+        $this->renderImport($errors, null);
     }
 
     /**
@@ -957,7 +1022,8 @@ final class AttendanceController
         } catch (AttendanceParseException $e) {
             $errors = $this->formatParseErrors($e);
         } catch (\Throwable $e) {
-            $errors = ['Import failed. No attendance records were saved: ' . $e->getMessage()];
+            ErrorLog::exception($e, 'attendance import confirm');
+            $errors = [UserMessage::prefixed('Import failed. No attendance records were saved', $e)];
         }
 
         $this->clearStagedImport();
@@ -971,23 +1037,44 @@ final class AttendanceController
         $actorId = (int) (AuthMiddleware::identity()['user_id'] ?? 0);
 
         try {
-            $this->makeConnection()->transaction(function (\PDO $pdo) use ($batchId, $actorId): void {
+            $sourceYear = 0;
+            $sourceMonth = 0;
+            $this->makeConnection()->transaction(function (\PDO $pdo) use ($batchId, $actorId, &$sourceYear, &$sourceMonth): void {
                 $batch = $pdo->prepare(
-                    'SELECT status FROM attendance_import_batch WHERE import_batch_id = :id FOR UPDATE'
+                    'SELECT status, source_year, source_month FROM attendance_import_batch WHERE import_batch_id = :id FOR UPDATE'
                 );
                 $batch->execute([':id' => $batchId]);
-                if ($batch->fetchColumn() !== 'Draft') {
+                $row = $batch->fetch(\PDO::FETCH_ASSOC);
+                if (!is_array($row) || ($row['status'] ?? '') !== 'Draft') {
                     throw new RuntimeException('Only a draft attendance import can be approved.');
                 }
+                $sourceYear = (int) ($row['source_year'] ?? 0);
+                $sourceMonth = (int) ($row['source_month'] ?? 0);
                 $pdo->prepare(
                     "UPDATE attendance_import_batch
                         SET status = 'Approved', approved_by = :user_id, approved_at = UTC_TIMESTAMP()
                       WHERE import_batch_id = :id"
                 )->execute([':id' => $batchId, ':user_id' => $actorId]);
             });
-            ViewRenderer::flash('Attendance import approved. Its timesheets are now available to payroll.');
+
+            $periodsCreated = 0;
+            if ($sourceYear >= 2000 && $sourceMonth >= 1 && $sourceMonth <= 12) {
+                try {
+                    $payrollService = new \Wbpms\Application\PayrollService($this->makeConnection());
+                    $periodsResult = $payrollService->createPeriodsForMonth(sprintf('%04d-%02d', $sourceYear, $sourceMonth));
+                    $periodsCreated = (int) ($periodsResult['created'] ?? 0);
+                } catch (\Throwable) {
+                    // Best-effort auto-generation of Friday-Thursday payroll periods
+                }
+            }
+
+            $extraMsg = $periodsCreated > 0
+                ? sprintf(' %d Friday–Thursday payroll period(s) were automatically created for %04d-%02d.', $periodsCreated, $sourceYear, $sourceMonth)
+                : '';
+            ViewRenderer::flash('Attendance import approved. Its timesheets are now available to payroll.' . $extraMsg);
         } catch (\Throwable $e) {
-            ViewRenderer::flashError('The import could not be approved: ' . $e->getMessage());
+            ErrorLog::exception($e, 'attendance import approve');
+            ViewRenderer::flashError(UserMessage::prefixed('The import could not be approved', $e));
         }
 
         $this->redirect('/hr/attendance/import');
@@ -1090,7 +1177,8 @@ final class AttendanceController
             });
             ViewRenderer::flash('Attendance import cancelled. Its timesheets are excluded from payroll.');
         } catch (\Throwable $e) {
-            ViewRenderer::flashError('The import could not be cancelled: ' . $e->getMessage());
+            ErrorLog::exception($e, 'attendance import cancel');
+            ViewRenderer::flashError(UserMessage::prefixed('The import could not be cancelled', $e));
         }
 
         $this->redirect('/hr/attendance/import');
@@ -1120,20 +1208,37 @@ final class AttendanceController
     }
 
     /** @param list<\Wbpms\Domain\Attendance\Parsing\ParsedPunch> $punches */
-    private function buildPreview(array $punches): array
+    private function buildPreview(array $punches, ?PdoAttendanceImportGateway $gateway = null, int $deviceId = 0): array
     {
         $sample = [];
         $dates = [];
         $enrollments = [];
+        $enrollmentSummary = [];
         foreach ($punches as $punch) {
             $dateTime = $punch->localTimestamp->format('Y-m-d H:i');
-            $dates[] = $punch->localTimestamp->format('Y-m-d');
-            $enrollments[$punch->enrollmentCode] = true;
+            $dateStr = $punch->localTimestamp->format('Y-m-d');
+            $dates[] = $dateStr;
+            $code = $punch->enrollmentCode;
+            $enrollments[$code] = true;
+            if (!isset($enrollmentSummary[$code])) {
+                $enrollmentSummary[$code] = [
+                    'code' => $code,
+                    'source_name' => $punch->sourceName ?? '',
+                    'department' => $punch->department ?? '',
+                    'punch_count' => 0,
+                    'dates' => [],
+                ];
+            }
+            $enrollmentSummary[$code]['punch_count']++;
+            $enrollmentSummary[$code]['dates'][$dateStr] = true;
+            if ($enrollmentSummary[$code]['source_name'] === '' && ($punch->sourceName ?? '') !== '') {
+                $enrollmentSummary[$code]['source_name'] = (string) $punch->sourceName;
+            }
             if (count($sample) < self::PREVIEW_MAX_PUNCHES) {
                 $sample[] = [
                     'row' => $punch->sourceRow,
                     'dateTime' => $dateTime,
-                    'enrollment' => $punch->enrollmentCode,
+                    'enrollment' => $code,
                     'name' => $punch->sourceName ?? '',
                     'department' => $punch->department ?? '',
                 ];
@@ -1141,9 +1246,43 @@ final class AttendanceController
         }
         sort($dates);
 
+        $diagnostics = [];
+        $matchedEnrollmentCount = 0;
+        $unmatchedEnrollmentCount = 0;
+        if ($gateway !== null && $deviceId > 0) {
+            ksort($enrollmentSummary, SORT_NATURAL);
+            foreach ($enrollmentSummary as $code => $info) {
+                $diag = $gateway->diagnoseEnrollmentMatch(
+                    $deviceId,
+                    (string) $code,
+                    array_keys($info['dates']),
+                );
+                if (($diag['status'] ?? '') === 'matched') {
+                    $matchedEnrollmentCount++;
+                } else {
+                    $unmatchedEnrollmentCount++;
+                }
+                $diagnostics[] = [
+                    'code' => (string) $code,
+                    'source_name' => (string) $info['source_name'],
+                    'department' => (string) $info['department'],
+                    'punch_count' => (int) $info['punch_count'],
+                    'status' => (string) ($diag['status'] ?? 'unmatched'),
+                    'reason' => (string) ($diag['reason'] ?? ''),
+                    'employee_id' => $diag['employee_id'] ?? null,
+                    'employee_number' => $diag['employee_number'] ?? null,
+                    'employee_name' => $diag['employee_name'] ?? null,
+                    'branch_name' => $diag['branch_name'] ?? null,
+                ];
+            }
+        }
+
         return [
             'total' => count($punches),
             'employeeCount' => count($enrollments),
+            'matchedEnrollmentCount' => $matchedEnrollmentCount,
+            'unmatchedEnrollmentCount' => $unmatchedEnrollmentCount,
+            'diagnostics' => $diagnostics,
             'dateFrom' => $dates[0] ?? null,
             'dateTo' => $dates[array_key_last($dates)] ?? null,
             'sample' => $sample,
@@ -1202,23 +1341,211 @@ final class AttendanceController
     }
 
     // -----------------------------------------------------------------------
+    // POST /hr/attendance/rematch
+    // -----------------------------------------------------------------------
+
+    /** @param array<string, string> $params */
+    public function rematchUnmatched(array $params = []): void
+    {
+        $actorId = (int) (AuthMiddleware::identity()['user_id'] ?? 0);
+        $deviceId = isset($_POST['device_id']) && (int) $_POST['device_id'] > 0
+            ? (int) $_POST['device_id'] : null;
+        $enrollmentCode = isset($_POST['enrollment_code']) && trim((string) $_POST['enrollment_code']) !== ''
+            ? trim((string) $_POST['enrollment_code']) : null;
+        $returnTo = trim((string) ($_POST['return_to'] ?? ''));
+        if (!in_array($returnTo, ['/hr/attendance', '/hr/attendance/import'], true)) {
+            $returnTo = '/hr/attendance';
+        }
+
+        try {
+            $result = $this->makeConnection()->transaction(
+                function (\PDO $pdo) use ($deviceId, $enrollmentCode, $actorId): array {
+                    $gateway = new PdoAttendanceImportGateway($pdo);
+                    $res = $gateway->rematchUnmatchedPunches($deviceId, $enrollmentCode, $actorId);
+                    if ($actorId > 0) {
+                        // Column names must match the audit_logs table; a wrong
+                        // column fails the INSERT and rolls back the whole re-match.
+                        $now = gmdate('Y-m-d H:i:s');
+                        $pdo->prepare(
+                            "INSERT INTO audit_logs
+                                (user_id, event_type, action_performed, table_affected, record_id,
+                                 ip_address, description, action_at, created_at)
+                             VALUES
+                                (:user_id, 'attendance_rematched', 'rematch_unmatched_punches', 'biometric_punch', NULL,
+                                 :ip, :description, :action_at, :created_at)"
+                        )->execute([
+                            ':user_id' => $actorId,
+                            ':action_at' => $now,
+                            ':created_at' => $now,
+                            ':description' => json_encode([
+                                'device_id' => $deviceId,
+                                'enrollment_code' => $enrollmentCode,
+                                'rematched_punches' => $res['rematched_punches'],
+                                'days_updated' => $res['days_updated'],
+                                'still_unmatched' => $res['still_unmatched'],
+                            ], JSON_THROW_ON_ERROR),
+                            ':ip' => $_SERVER['REMOTE_ADDR'] ?? null,
+                        ]);
+                    }
+                    return $res;
+                }
+            );
+
+            if ($result['rematched_punches'] > 0) {
+                ViewRenderer::flash(sprintf(
+                    'Re-matched %d previously unmatched punch(es) across %d attendance day(s). %d punch(es) remain unmatched.',
+                    $result['rematched_punches'],
+                    $result['days_updated'],
+                    $result['still_unmatched'],
+                ));
+            } else {
+                ViewRenderer::flash(sprintf(
+                    'No unmatched punches could be matched yet (%d punch(es) still unmatched — verify employee Biometric Enroll ID, Hire/Effective Date, and Device Branch coverage).',
+                    $result['still_unmatched'],
+                ));
+            }
+        } catch (\Throwable $e) {
+            ErrorLog::exception($e, 'attendance re-match');
+            ViewRenderer::flashError(UserMessage::prefixed('Failed to re-match unmatched punches', $e));
+        }
+
+        $this->redirect($returnTo);
+    }
+
+    // -----------------------------------------------------------------------
+    // GET /hr/attendance/manual
+    // -----------------------------------------------------------------------
+
+    /** @param array<string, string> $params */
+    public function manualForm(array $params = []): void
+    {
+        $employeeId = (int) ($_GET['employee_id'] ?? 0);
+        $date = trim((string) ($_GET['date'] ?? ''));
+
+        if ($employeeId <= 0 || !$this->isIsoDate($date)) {
+            ViewRenderer::flashError('Please select a valid employee and date for manual attendance entry.');
+            $this->redirect('/hr/attendance');
+            return;
+        }
+
+        try {
+            $context = $this->adjustmentService()->findForManualEntry($employeeId, $date);
+        } catch (RuntimeException $e) {
+            ViewRenderer::flashError(UserMessage::from($e));
+            $this->redirect('/hr/attendance');
+            return;
+        }
+
+        ViewRenderer::render('hr/attendance/manual', [
+            'context' => $context,
+            'errors' => [],
+            'old' => [],
+        ], 'Record Manual Attendance');
+    }
+
+    // -----------------------------------------------------------------------
+    // POST /hr/attendance/manual
+    // -----------------------------------------------------------------------
+
+    /** @param array<string, string> $params */
+    public function storeManual(array $params = []): void
+    {
+        $employeeId = (int) ($_POST['employee_id'] ?? 0);
+        $date = trim((string) ($_POST['attendance_date'] ?? ''));
+        $input = [
+            'time_in' => trim((string) ($_POST['time_in'] ?? '')),
+            'time_out' => trim((string) ($_POST['time_out'] ?? '')),
+            'reason' => trim((string) ($_POST['reason'] ?? '')),
+        ];
+
+        try {
+            $identity = AuthMiddleware::identity();
+            $this->adjustmentService()->recordManualAttendance(
+                $employeeId,
+                $date,
+                $input,
+                (int) ($identity['user_id'] ?? 0),
+            );
+            ViewRenderer::flash('Manual attendance recorded and logged in the audit trail.');
+            $monthParam = $this->isIsoDate($date) ? '?_tab=cutoff&month=' . substr($date, 0, 7) : '';
+            $this->redirect('/hr/attendance' . $monthParam);
+            return;
+        } catch (RuntimeException $e) {
+            try {
+                $context = $this->adjustmentService()->findForManualEntry($employeeId, $date);
+            } catch (RuntimeException $inner) {
+                ViewRenderer::flashError(UserMessage::from($inner));
+                $this->redirect('/hr/attendance');
+                return;
+            }
+            ViewRenderer::render('hr/attendance/manual', [
+                'context' => $context,
+                'errors' => [UserMessage::from($e)],
+                'old' => $input,
+            ], 'Record Manual Attendance');
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // GET /hr/attendance/{id}/adjust
     // -----------------------------------------------------------------------
 
     /** @param array<string, string> $params */
+    /**
+     * GET /hr/attendance/preview-minutes — read-only JSON for the live
+     * preview on the Adjust and Manual forms (REQ019). Either attendance_id,
+     * or employee_id + date, plus time_in and time_out (HH:MM).
+     *
+     * @param array<string, string> $params
+     */
+    public function previewMinutes(array $params = []): void
+    {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+        $service = $this->adjustmentService();
+        try {
+            $attendanceId = (int) ($_GET['attendance_id'] ?? 0);
+            if ($attendanceId > 0) {
+                $context = $service->findForAdjustment($attendanceId);
+            } else {
+                $employeeId = (int) ($_GET['employee_id'] ?? 0);
+                $date       = trim((string) ($_GET['date'] ?? ''));
+                if ($employeeId <= 0 || !$this->isIsoDate($date)) {
+                    throw new RuntimeException('Missing employee or date.');
+                }
+                $context = $service->findForManualEntry($employeeId, $date);
+            }
+            $minutes = $service->previewMinutes(
+                $context,
+                (string) ($_GET['time_in'] ?? ''),
+                (string) ($_GET['time_out'] ?? '')
+            );
+            echo json_encode(['ok' => true] + $minutes + [
+                'worked_label'    => \Wbpms\Http\View\Formatter::hoursMinutes($minutes['worked']),
+                'late_label'      => \Wbpms\Http\View\Formatter::hoursMinutes($minutes['late']),
+                'undertime_label' => \Wbpms\Http\View\Formatter::hoursMinutes($minutes['undertime']),
+            ]);
+        } catch (RuntimeException $e) {
+            echo json_encode(['ok' => false, 'message' => UserMessage::from($e)]);
+        }
+    }
+
     public function adjustForm(array $params = []): void
     {
         $attendanceId = (int) ($params['id'] ?? 0);
         try {
-            $attendance = $this->adjustmentService()->findForAdjustment($attendanceId);
+            $service = $this->adjustmentService();
+            $attendance = $service->findForAdjustment($attendanceId);
+            $history = $service->adjustmentHistory($attendanceId);
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
             $this->redirect('/hr/attendance');
             return;
         }
 
         ViewRenderer::render('hr/attendance/adjust', [
             'attendance' => $attendance,
+            'history' => $history,
             'errors' => [],
             'old' => [],
         ], 'Adjust Attendance');
@@ -1252,7 +1579,9 @@ final class AttendanceController
             return;
         } catch (RuntimeException $e) {
             try {
-                $attendance = $this->adjustmentService()->findForAdjustment($attendanceId);
+                $service = $this->adjustmentService();
+                $attendance = $service->findForAdjustment($attendanceId);
+                $history = $service->adjustmentHistory($attendanceId);
             } catch (RuntimeException) {
                 ViewRenderer::flashError('Attendance record not found.');
                 $this->redirect('/hr/attendance');
@@ -1260,7 +1589,8 @@ final class AttendanceController
             }
             ViewRenderer::render('hr/attendance/adjust', [
                 'attendance' => $attendance,
-                'errors' => [$e->getMessage()],
+                'history' => $history,
+                'errors' => [UserMessage::from($e)],
                 'old' => $input,
             ], 'Adjust Attendance');
         }

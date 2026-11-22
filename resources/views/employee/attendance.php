@@ -8,7 +8,7 @@ $filtered = $dateFrom !== '' || $dateTo !== '';
 ?>
 <div class="page-head">
     <div><h1>My Attendance</h1><p>Your biometric attendance records.</p></div>
-    <a href="<?= $base ?>/employee/dashboard" class="btn btn-secondary">← Back to Dashboard</a>
+    <a href="<?= $base ?>/employee/dashboard" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Dashboard</a>
 </div>
 <div class="cards four">
     <div class="stat"><strong><?= $total ?></strong><span>Total Days</span></div>
@@ -33,7 +33,7 @@ $filtered = $dateFrom !== '' || $dateTo !== '';
                    value="<?= Formatter::escape($dateTo) ?>"
                    style="padding:.45rem .7rem;border:1px solid #d1d5db;border-radius:4px;font-size:.875rem">
         </div>
-        <button type="submit" class="btn btn-primary">Filter</button>
+        <button type="submit" class="btn btn-primary">Apply Filters</button>
         <?php if ($filtered): ?>
         <a href="<?= $base ?>/employee/attendance" class="btn btn-secondary">Clear</a>
         <?php endif; ?>
@@ -50,8 +50,8 @@ $filtered = $dateFrom !== '' || $dateTo !== '';
     <table id="attTable">
         <thead>
             <tr>
-                <th>DATE</th><th>TIME IN</th><th>TIME OUT</th>
-                <th>WORKED</th><th>LATE</th><th>UNDERTIME</th><th>OVERTIME</th><th>STATUS</th>
+                <th>Date</th><th>Time In</th><th>Time Out</th>
+                <th>Worked</th><th>Late</th><th>Undertime</th><th>Overtime</th><th>Status</th>
             </tr>
         </thead>
         <tbody>

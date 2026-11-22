@@ -1,9 +1,15 @@
 <?php
+
+declare(strict_types=1);
+
 /** @var array<string,mixed> $attendance */
+/** @var list<array<string,mixed>> $history */
 /** @var list<string> $errors */
 /** @var array<string,string> $old */
 
 use Wbpms\Http\View\Formatter;
+
+$history ??= [];
 
 $value = static function (string $key, string $fallback = '') use ($old): string {
     return (string) ($old[$key] ?? $fallback);
@@ -16,7 +22,7 @@ $timeValue = static fn (?string $time): string => $time === null ? '' : substr($
         <h1>Adjust Attendance</h1>
         <p>Correct a biometric exception. The original punches remain unchanged.</p>
     </div>
-    <a href="<?= $base ?>/hr/attendance" class="btn btn-secondary">← Back to Attendance</a>
+    <a href="<?= $base ?>/hr/attendance" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Attendance</a>
 </div>
 
 <?php if ($errors !== []): ?>
@@ -42,18 +48,26 @@ $timeValue = static fn (?string $time): string => $time === null ? '' : substr($
         <p style="margin-top:0;color:#6b7280;font-size:.9rem">Enter both times to resolve an incomplete record. Worked, late, and undertime are recalculated from the assigned schedule. Overtime is recorded only when an approved overtime request overlaps the actual overtime window.</p>
         <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem">
             <div>
-                <label for="time_in">Time in</label>
+                <label for="time_in">Time In</label>
                 <input id="time_in" name="time_in" type="text" pattern="(?:[01][0-9]|2[0-3]):[0-5][0-9]" required value="<?= Formatter::escape($value('time_in', $timeValue($attendance['time_in']))) ?>" placeholder="HH:MM">
             </div>
             <div>
-                <label for="time_out">Time out</label>
+                <label for="time_out">Time Out</label>
                 <input id="time_out" name="time_out" type="text" pattern="(?:[01][0-9]|2[0-3]):[0-5][0-9]" required value="<?= Formatter::escape($value('time_out', $timeValue($attendance['time_out']))) ?>" placeholder="HH:MM">
             </div>
             <p class="muted" style="margin:.5rem 0 0;font-size:.8rem">Use 24-hour time (HH:MM), for example 13:30.</p>
         </div>
+        <div class="minutes-preview" data-minutes-preview
+             data-url="<?= $base ?>/hr/attendance/preview-minutes?attendance_id=<?= (int) $attendance['attendance_id'] ?>" aria-live="polite">
+            <span class="minutes-preview-title">Will be recorded</span>
+            <span><b data-preview="worked">—</b> worked</span>
+            <span><b data-preview="late">—</b> late</span>
+            <span><b data-preview="undertime">—</b> undertime</span>
+            <span class="minutes-preview-note" data-preview="note">Updates as you type the times.</span>
+        </div>
 
         <div style="margin-top:1rem">
-            <label for="reason">Reason and supporting reference</label>
+            <label for="reason">Reason and Supporting Evidence</label>
             <textarea id="reason" name="reason" required maxlength="1000" rows="4" placeholder="e.g. Gate log reference or missed biometric punch."><?= Formatter::escape($value('reason')) ?></textarea>
         </div>
 
@@ -63,3 +77,37 @@ $timeValue = static fn (?string $time): string => $time === null ? '' : substr($
         <button type="submit" class="btn btn-primary">Save audited adjustment</button>
     </form>
 </div>
+
+<?php if ($history !== []): ?>
+<div class="card" style="margin-top:1.25rem;max-width:960px">
+    <h3 style="margin:0 0 .75rem;font-size:15px">Audited Adjustment History</h3>
+    <div class="table-wrap">
+        <table style="width:100%;font-size:12px;border-collapse:collapse">
+            <thead>
+                <tr>
+                    <th style="text-align:left;padding:8px;border-bottom:1px solid var(--line)">Adjusted At</th>
+                    <th style="text-align:left;padding:8px;border-bottom:1px solid var(--line)">By</th>
+                    <th style="text-align:left;padding:8px;border-bottom:1px solid var(--line)">Type</th>
+                    <th style="text-align:left;padding:8px;border-bottom:1px solid var(--line)">Before → After</th>
+                    <th style="text-align:left;padding:8px;border-bottom:1px solid var(--line)">Reason / Evidence</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($history as $adj): ?>
+                <tr>
+                    <td style="padding:8px;border-bottom:1px solid var(--line);white-space:nowrap"><?= Formatter::dateTime((string) ($adj['adjustment_at'] ?? '')) ?></td>
+                    <td style="padding:8px;border-bottom:1px solid var(--line)"><?= Formatter::escape((string) ($adj['adjusted_by_name'] ?? 'HR')) ?></td>
+                    <td style="padding:8px;border-bottom:1px solid var(--line)"><code><?= Formatter::escape((string) ($adj['adjustment_type'] ?? '')) ?></code></td>
+                    <td style="padding:8px;border-bottom:1px solid var(--line);white-space:nowrap">
+                        <?= Formatter::escape((string) ($adj['old_time_in'] ?? '—')) ?>–<?= Formatter::escape((string) ($adj['old_time_out'] ?? '—')) ?>
+                        →
+                        <strong><?= Formatter::escape((string) ($adj['new_time_in'] ?? '—')) ?>–<?= Formatter::escape((string) ($adj['new_time_out'] ?? '—')) ?></strong>
+                    </td>
+                    <td style="padding:8px;border-bottom:1px solid var(--line)"><?= Formatter::escape((string) ($adj['reason'] ?? '')) ?></td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+</div>
+<?php endif; ?>

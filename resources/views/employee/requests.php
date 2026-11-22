@@ -17,7 +17,7 @@ use Wbpms\Http\View\Formatter;
 <div class="panel table-wrap">
     <table id="myReqTable">
         <thead>
-            <tr><th>TYPE</th><th>SUBMITTED</th><th>STATUS</th><th>REMARKS</th><th>HR NOTE</th></tr>
+            <tr><th>Type</th><th>Submitted</th><th>Status</th><th>Remarks</th><th>HR Note</th></tr>
         </thead>
         <tbody>
         <?php if (empty($rows)): ?>

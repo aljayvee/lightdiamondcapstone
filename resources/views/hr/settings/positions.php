@@ -42,7 +42,7 @@ $e = static fn(string $key): string => isset($errors[$key])
 <div class="card" style="padding:0;overflow:hidden">
     <div style="padding:14px 20px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center">
         <strong>All Positions</strong>
-        <div class="local-search-wrap">⌕<input placeholder="Search…" oninput="filterRows(this,'posTable')"></div>
+        <div class="local-search-wrap"><?= \Wbpms\Http\View\Icon::svg('search') ?><input placeholder="Search…" oninput="filterRows(this,'posTable')"></div>
     </div>
     <table class="data-table" id="posTable">
         <thead>
@@ -83,7 +83,7 @@ $e = static fn(string $key): string => isset($errors[$key])
                     <!-- Toggle Active / Inactive -->
                     <form method="POST"
                           action="<?= $base ?>/hr/settings/positions/<?= (int)$p['position_id'] ?>/toggle"
-                          onsubmit="return confirm('<?= $isActive ? 'Deactivate' : 'Activate' ?> this position?')">
+                          data-confirm="<?= $isActive ? 'Deactivate' : 'Activate' ?> this position?">
                         <input type="hidden" name="_csrf" value="<?= htmlspecialchars($csrf ?? '', ENT_QUOTES, 'UTF-8') ?>">
                         <button type="submit" class="btn btn-sm <?= $isActive ? 'btn-warn' : 'btn-secondary' ?>">
                             <?= $isActive ? 'Deactivate' : 'Activate' ?>

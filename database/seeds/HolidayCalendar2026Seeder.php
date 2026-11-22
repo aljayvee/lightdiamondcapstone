@@ -8,8 +8,9 @@ use Phinx\Seed\AbstractSeed;
  * Seeder: 2026 Philippine Public Holidays
  *
  * Seeds the `holiday_calendar` table with official Regular and Special
- * Non-Working holidays for 2026, based on Proclamation No. 727 (s. 2025)
- * and prior RA 9492 / RA 10966 fixed-date holidays.
+ * Non-Working holidays for 2026 per Proclamation No. 1006 (s. 2025), plus
+ * Eid'l Fitr (Proclamation No. 1189, s. 2026) and Eid'l Adha (Proclamation
+ * No. 1264, s. 2026), which are proclaimed separately each year.
  *
  * ⚠  ADVISORY NOTICE ⚠
  * Presidential proclamations may add, move, or bridge holidays during the year.
@@ -37,7 +38,7 @@ class HolidayCalendar2026Seeder extends AbstractSeed
     {
         return [
             // ---------------------------------------------------------------
-            // REGULAR HOLIDAYS (RA 9492 fixed + Proclamation 727 s.2025)
+            // REGULAR HOLIDAYS (Proclamation 1006 s.2025)
             // ---------------------------------------------------------------
             ['2026-01-01', "New Year's Day",                          'Regular', 2.00],
             ['2026-04-02', 'Maundy Thursday',                         'Regular', 2.00],
@@ -50,26 +51,27 @@ class HolidayCalendar2026Seeder extends AbstractSeed
             ['2026-12-25', 'Christmas Day',                           'Regular', 2.00],
             ['2026-12-30', 'Rizal Day',                               'Regular', 2.00],
 
-            // Eid'l Fitr — approximate date based on Islamic calendar for 2026;
-            // actual date to be confirmed by proclamation when the moon is sighted.
-            ['2026-03-20', "Eid'l Fitr (approx.)",                    'Regular', 2.00],
-
-            // Eid'l Adha — approximate date; confirm per proclamation.
-            ['2026-05-27', "Eid'l Adha (approx.)",                    'Regular', 2.00],
+            // Islamic holidays, proclaimed separately once the dates are set.
+            ['2026-03-20', "Eid'l Fitr",                              'Regular', 2.00], // Proc. 1189 s.2026
+            ['2026-05-27', "Eid'l Adha",                              'Regular', 2.00], // Proc. 1264 s.2026
 
             // ---------------------------------------------------------------
-            // SPECIAL NON-WORKING HOLIDAYS (Proclamation 727 s.2025 + fixed)
+            // SPECIAL (NON-WORKING) DAYS (Proclamation 1006 s.2025)
+            // Jan 2 and Oct 31 are not declared for 2026.
             // ---------------------------------------------------------------
-            ['2026-01-02', 'Special Non-Working Day (New Year bridge)', 'SpecialNonWorking', 1.30],
-            ['2026-02-05', 'Chinese New Year (Year of the Horse)',       'SpecialNonWorking', 1.30],
+            ['2026-02-17', 'Chinese New Year',                           'SpecialNonWorking', 1.30],
             ['2026-04-04', 'Black Saturday',                             'SpecialNonWorking', 1.30],
             ['2026-08-21', 'Ninoy Aquino Day',                          'SpecialNonWorking', 1.30],
-            ['2026-10-31', "All Hallows' Eve (Halloween)",               'SpecialNonWorking', 1.30],
             ['2026-11-01', "All Saints' Day",                            'SpecialNonWorking', 1.30],
             ['2026-11-02', "All Souls' Day",                             'SpecialNonWorking', 1.30],
             ['2026-12-08', 'Feast of the Immaculate Conception',        'SpecialNonWorking', 1.30],
             ['2026-12-24', 'Christmas Eve',                              'SpecialNonWorking', 1.30],
-            ['2026-12-31', "New Year's Eve",                             'SpecialNonWorking', 1.30],
+            ['2026-12-31', 'Last Day of the Year',                       'SpecialNonWorking', 1.30],
+
+            // ---------------------------------------------------------------
+            // SPECIAL (WORKING) DAY (Proclamation 1006 s.2025): ordinary pay
+            // ---------------------------------------------------------------
+            ['2026-02-25', 'EDSA People Power Revolution Anniversary',   'Special', 1.00],
         ];
     }
 

@@ -48,9 +48,11 @@ $router->add('POST', '/login',         [AuthController::class, 'login'],        
 // avoid any potential prefix collision in future router extensions.
 $router->add('GET',  '/forgot-password/sent', [AuthController::class, 'showResetLinkSent'], []);
 $router->add('GET',  '/forgot-password',      [AuthController::class, 'showForgotPassword'], []);
-$router->add('POST', '/forgot-password',      [AuthController::class, 'sendResetLink'],      []);
+$router->add('POST', '/forgot-password',      [AuthController::class, 'sendResetCode'],      []);
+$router->add('POST', '/forgot-password/resend', [AuthController::class, 'resendResetCode'],  []);
 $router->add('GET',  '/reset-password',       [AuthController::class, 'showResetPassword'],  []);
 $router->add('POST', '/reset-password',       [AuthController::class, 'resetPassword'],      []);
+$router->add('GET',  '/verify-email',         [AuthController::class, 'verifyEmail'],        []);
 
 // ---------------------------------------------------------------------------
 // Shared authenticated routes
@@ -60,7 +62,15 @@ $router->add('POST', '/logout', [AuthController::class, 'logout'], ['BusinessOwn
 
 // Requirement 13: mandatory first-login password change (any authenticated role)
 $router->add('GET',  '/change-password', [AuthController::class, 'showChangePassword'], ['BusinessOwner', 'HRHead', 'Employee']);
+// REQ002: everyday Change Password for every signed-in role.
+$router->add('GET',  '/account/password', [AuthController::class, 'showAccountPassword'],   ['BusinessOwner', 'HRHead', 'Employee']);
+$router->add('POST', '/account/password', [AuthController::class, 'updateAccountPassword'], ['BusinessOwner', 'HRHead', 'Employee']);
 $router->add('POST', '/change-password', [AuthController::class, 'changePassword'],     ['BusinessOwner', 'HRHead', 'Employee']);
+
+// First-login email OTP: asked once, after the temporary password is replaced
+$router->add('GET',  '/verify-otp',        [AuthController::class, 'showVerifyOtp'], ['BusinessOwner', 'HRHead', 'Employee']);
+$router->add('POST', '/verify-otp',        [AuthController::class, 'verifyOtp'],     ['BusinessOwner', 'HRHead', 'Employee']);
+$router->add('POST', '/verify-otp/resend', [AuthController::class, 'resendOtp'],     ['BusinessOwner', 'HRHead', 'Employee']);
 
 // ---------------------------------------------------------------------------
 // Business Owner — dashboard
@@ -70,19 +80,22 @@ $router->add('GET', '/owner/dashboard', [DashboardController::class, 'ownerDashb
 
 // ---------------------------------------------------------------------------
 // Business Owner — User Management CRUD  (REQ004–REQ008)
+// BusinessOwner only: HR Head access (nav link + routes) removed 2026-11-21
+// at the owner's request; HR Head now gets 403 on every /users route.
 // NOTE: /users/create must be registered before /users/{id} to avoid literal
 //       "create" being captured as an {id} segment.
 // ---------------------------------------------------------------------------
 
-$router->add('GET',  '/users',              [UserController::class, 'index'],         ['BusinessOwner', 'HRHead']);
-$router->add('GET',  '/users/create',       [UserController::class, 'create'],        ['BusinessOwner', 'HRHead']);
-$router->add('POST', '/users',              [UserController::class, 'store'],         ['BusinessOwner', 'HRHead']);
-$router->add('GET',  '/users/{id}/edit',    [UserController::class, 'edit'],          ['BusinessOwner', 'HRHead']);
-$router->add('PUT',  '/users/{id}',         [UserController::class, 'update'],        ['BusinessOwner', 'HRHead']);
-$router->add('POST', '/users/{id}/toggle',    [UserController::class, 'toggle'],    ['BusinessOwner', 'HRHead']);
-$router->add('POST', '/users/{id}/archive',   [UserController::class, 'archive'],   ['BusinessOwner', 'HRHead']);
-$router->add('POST', '/users/{id}/unarchive', [UserController::class, 'unarchive'], ['BusinessOwner', 'HRHead']);
-$router->add('POST', '/users/{id}/reset-password', [UserController::class, 'resetPassword'], ['BusinessOwner', 'HRHead']);
+$router->add('GET',  '/users',              [UserController::class, 'index'],         ['BusinessOwner']);
+$router->add('GET',  '/users/create',       [UserController::class, 'create'],        ['BusinessOwner']);
+$router->add('POST', '/users',              [UserController::class, 'store'],         ['BusinessOwner']);
+$router->add('GET',  '/users/{id}/edit',    [UserController::class, 'edit'],          ['BusinessOwner']);
+$router->add('PUT',  '/users/{id}',         [UserController::class, 'update'],        ['BusinessOwner']);
+$router->add('POST', '/users/{id}/toggle',    [UserController::class, 'toggle'],    ['BusinessOwner']);
+$router->add('POST', '/users/{id}/archive',   [UserController::class, 'archive'],   ['BusinessOwner']);
+$router->add('POST', '/users/{id}/unarchive', [UserController::class, 'unarchive'], ['BusinessOwner']);
+$router->add('POST', '/users/{id}/reset-password', [UserController::class, 'resetPassword'], ['BusinessOwner']);
+$router->add('POST', '/users/{id}/resend-verification', [UserController::class, 'resendVerification'], ['BusinessOwner']);
 
 // ---------------------------------------------------------------------------
 // Business Owner — Payroll review  (REQ050, REQ051)
@@ -122,8 +135,8 @@ $router->add('GET',  '/hr/employees/created',         [EmployeeController::class
 $router->add('POST', '/hr/employees',                [EmployeeController::class, 'store'],         ['HRHead']);
 $router->add('GET',  '/hr/employees/{id}/transfer',  [EmployeeController::class, 'transferForm'],  ['HRHead']);
 $router->add('POST', '/hr/employees/{id}/transfer',  [EmployeeController::class, 'transfer'],      ['HRHead']);
-$router->add('GET',  '/hr/employees/{id}/archive',   [EmployeeController::class, 'archiveForm'],   ['HRHead']);
-$router->add('POST', '/hr/employees/{id}/archive',   [EmployeeController::class, 'archive'],       ['HRHead']);
+$router->add('GET',  '/hr/employees/{id}/archive',   [EmployeeController::class, 'archiveForm'],   ['HRHead', 'BusinessOwner']);
+$router->add('POST', '/hr/employees/{id}/archive',   [EmployeeController::class, 'archive'],       ['HRHead', 'BusinessOwner']);
 $router->add('GET',  '/hr/employees/{id}/rehire',    [EmployeeController::class, 'rehireForm'],    ['HRHead']);
 $router->add('POST', '/hr/employees/{id}/rehire',    [EmployeeController::class, 'rehire'],        ['HRHead']);
 // Bank account details
@@ -166,6 +179,11 @@ $router->add('POST', '/hr/attendance/import', [AttendanceController::class, 'upl
 $router->add('POST', '/hr/attendance/import/confirm', [AttendanceController::class, 'confirmImport'], ['HRHead']);
 $router->add('POST', '/hr/attendance/import/{id}/approve', [AttendanceController::class, 'approveImport'], ['HRHead']);
 $router->add('POST', '/hr/attendance/import/{id}/cancel', [AttendanceController::class, 'cancelImport'], ['HRHead']);
+$router->add('POST', '/hr/attendance/rematch', [AttendanceController::class, 'rematchUnmatched'], ['HRHead']);
+$router->add('GET',  '/hr/attendance/manual', [AttendanceController::class, 'manualForm'], ['HRHead']);
+// REQ019: read-only live preview of worked/late/undertime on Adjust and Manual forms.
+$router->add('GET',  '/hr/attendance/preview-minutes', [AttendanceController::class, 'previewMinutes'], ['HRHead']);
+$router->add('POST', '/hr/attendance/manual', [AttendanceController::class, 'storeManual'], ['HRHead']);
 $router->add('GET',  '/hr/attendance/{id}/adjust', [AttendanceController::class, 'adjustForm'], ['HRHead']);
 $router->add('POST', '/hr/attendance/{id}/adjust', [AttendanceController::class, 'adjust'],     ['HRHead']);
 
@@ -262,11 +280,12 @@ $router->add('GET', '/hr/audit', [AuditController::class, 'index'], ['HRHead', '
 
 $router->add('GET',  '/hr/settings',                              [SettingsController::class, 'index'],          ['HRHead']);
 
-// Job Positions
+// Job Positions & Payroll Policy
 $router->add('GET',  '/hr/settings/positions',                    [SettingsController::class, 'positions'],       ['HRHead']);
 $router->add('POST', '/hr/settings/positions',                    [SettingsController::class, 'storePosition'],   ['HRHead']);
 $router->add('POST', '/hr/settings/positions/{id}/toggle',        [SettingsController::class, 'togglePosition'],  ['HRHead']);
 $router->add('POST', '/hr/settings/positions/{id}',               [SettingsController::class, 'updatePosition'],  ['HRHead']);
+$router->add('POST', '/hr/settings/policy',                       [SettingsController::class, 'updatePolicy'],    ['HRHead']);
 
 // Payroll Periods
 $router->add('GET',  '/hr/settings/periods',                      [SettingsController::class, 'periods'],         ['HRHead']);

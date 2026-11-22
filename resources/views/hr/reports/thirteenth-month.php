@@ -66,7 +66,7 @@ $totalThirteenthMonth = array_sum(array_column($rows, 'thirteenth_month'));
                 <?php endforeach; ?>
             </select>
         </div>
-        <button type="submit" class="btn btn-secondary">Filter</button>
+        <button type="submit" class="btn btn-secondary">Apply Filters</button>
         <?php if ($filters['branch_id'] !== 0 || $filters['employee_id'] !== 0 || $filters['year'] !== (int) date('Y')): ?>
         <a href="<?= $base ?>/hr/reports/13th-month" class="btn btn-secondary">Clear</a>
         <?php endif; ?>

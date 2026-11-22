@@ -23,6 +23,7 @@ final class PositionRepository extends AbstractRepository
     {
         return $this->pdo()->query(
             "SELECT position_id, position_title, department,
+                    default_daily_rate, requires_regular,
                     status, sort_order, created_at, updated_at
                FROM job_position
               ORDER BY sort_order ASC, position_title ASC"
@@ -32,12 +33,12 @@ final class PositionRepository extends AbstractRepository
     /**
      * Active positions only — for employee form dropdown.
      *
-     * @return list<array{position_id:int,position_title:string,department:string|null}>
+     * @return list<array{position_id:int,position_title:string,department:string|null,default_daily_rate:float|null,requires_regular:int}>
      */
     public function activeList(): array
     {
         return $this->pdo()->query(
-            "SELECT position_id, position_title, department
+            "SELECT position_id, position_title, department, default_daily_rate, requires_regular
                FROM job_position
               WHERE status = 'Active'
               ORDER BY sort_order ASC, position_title ASC"
@@ -52,7 +53,7 @@ final class PositionRepository extends AbstractRepository
     public function findById(int $positionId): ?array
     {
         $stmt = $this->pdo()->prepare(
-            "SELECT position_id, position_title, department, status, sort_order
+            "SELECT position_id, position_title, department, default_daily_rate, requires_regular, status, sort_order
                FROM job_position
               WHERE position_id = :id"
         );
@@ -62,23 +63,48 @@ final class PositionRepository extends AbstractRepository
     }
 
     /**
+     * Find a single position by title (case-insensitive), or null.
+     *
+     * @return array<string,mixed>|null
+     */
+    public function findByTitle(string $title): ?array
+    {
+        $stmt = $this->pdo()->prepare(
+            "SELECT position_id, position_title, department, default_daily_rate, requires_regular, status, sort_order
+               FROM job_position
+              WHERE LOWER(TRIM(position_title)) = LOWER(TRIM(:title))
+              LIMIT 1"
+        );
+        $stmt->execute([':title' => $title]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row !== false ? $row : null;
+    }
+
+    /**
      * Create a new position. Returns the new position_id.
      *
      * @throws \RuntimeException on duplicate title
      */
-    public function create(string $title, ?string $department, int $sortOrder): int
-    {
+    public function create(
+        string $title,
+        ?string $department,
+        int $sortOrder,
+        ?float $defaultDailyRate = null,
+        bool $requiresRegular = false
+    ): int {
         try {
             $stmt = $this->pdo()->prepare(
                 "INSERT INTO job_position
-                    (position_title, department, status, sort_order, created_at, updated_at)
+                    (position_title, department, default_daily_rate, requires_regular, status, sort_order, created_at, updated_at)
                  VALUES
-                    (:title, :dept, 'Active', :sort, NOW(), NOW())"
+                    (:title, :dept, :rate, :req_reg, 'Active', :sort, NOW(), NOW())"
             );
             $stmt->execute([
-                ':title' => $title,
-                ':dept'  => $department !== '' ? $department : null,
-                ':sort'  => $sortOrder,
+                ':title'   => $title,
+                ':dept'    => $department !== '' ? $department : null,
+                ':rate'    => $defaultDailyRate,
+                ':req_reg' => $requiresRegular ? 1 : 0,
+                ':sort'    => $sortOrder,
             ]);
         } catch (\PDOException $e) {
             if (str_contains($e->getMessage(), '1062') || str_contains($e->getMessage(), 'Duplicate')) {
@@ -94,21 +120,31 @@ final class PositionRepository extends AbstractRepository
      *
      * @throws \RuntimeException on duplicate title
      */
-    public function update(int $positionId, string $title, ?string $department, int $sortOrder): void
-    {
+    public function update(
+        int $positionId,
+        string $title,
+        ?string $department,
+        int $sortOrder,
+        ?float $defaultDailyRate = null,
+        bool $requiresRegular = false
+    ): void {
         try {
             $this->pdo()->prepare(
                 "UPDATE job_position
-                    SET position_title = :title,
-                        department     = :dept,
-                        sort_order     = :sort,
-                        updated_at     = NOW()
+                    SET position_title     = :title,
+                        department         = :dept,
+                        default_daily_rate = :rate,
+                        requires_regular   = :req_reg,
+                        sort_order         = :sort,
+                        updated_at         = NOW()
                   WHERE position_id = :id"
             )->execute([
-                ':title' => $title,
-                ':dept'  => $department !== '' ? $department : null,
-                ':sort'  => $sortOrder,
-                ':id'    => $positionId,
+                ':title'   => $title,
+                ':dept'    => $department !== '' ? $department : null,
+                ':rate'    => $defaultDailyRate,
+                ':req_reg' => $requiresRegular ? 1 : 0,
+                ':sort'    => $sortOrder,
+                ':id'      => $positionId,
             ]);
         } catch (\PDOException $e) {
             if (str_contains($e->getMessage(), '1062') || str_contains($e->getMessage(), 'Duplicate')) {

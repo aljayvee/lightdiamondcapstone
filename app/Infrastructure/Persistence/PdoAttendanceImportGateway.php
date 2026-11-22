@@ -11,6 +11,7 @@ use Wbpms\Application\Attendance\AttendanceImportGateway;
 use Wbpms\Application\Attendance\AttendanceImportSummary;
 use Wbpms\Application\Attendance\AttendancePunchMatch;
 use Wbpms\Domain\Attendance\GeneratedAttendance;
+use Wbpms\Domain\Attendance\PunchDayClassifier;
 use Wbpms\Domain\Attendance\WorkSchedule;
 use Wbpms\Domain\Attendance\Parsing\ParsedPunch;
 use Wbpms\Domain\Payroll\ApprovedOvertimeCalculator;
@@ -169,7 +170,10 @@ final class PdoAttendanceImportGateway implements AttendanceImportGateway
         $punchLocal = $punch->localTimestamp->format('Y-m-d H:i:s');
         $punchDate  = $punch->localTimestamp->format('Y-m-d');
 
-        // 1. Find enrollment effective at punch time for this device + code
+        // 1. Find enrollment effective at punch time for this device + code.
+        // Historical closed enrollments (effective_to IS NOT NULL) remain valid
+        // for dates inside [effective_from, effective_to), so pre-separation
+        // punches match even if the monthly workbook is imported after archiving.
         $stmt = $this->pdo->prepare(
             "SELECT ebe.employee_id, ebe.enrollment_id
                FROM employee_biometric_enrollment ebe
@@ -177,7 +181,8 @@ final class PdoAttendanceImportGateway implements AttendanceImportGateway
                 AND ebe.device_employee_code = :code
                 AND ebe.effective_from      <= :enrollment_from_date
                 AND (ebe.effective_to IS NULL OR ebe.effective_to > :enrollment_to_date)
-                AND ebe.status = 'Active'
+                AND (ebe.status = 'Active' OR ebe.effective_to IS NOT NULL)
+              ORDER BY ebe.effective_from DESC
               LIMIT 1"
         );
         $stmt->execute([
@@ -281,14 +286,15 @@ final class PdoAttendanceImportGateway implements AttendanceImportGateway
     {
         if ($scheduleId === null || $scheduleId === 0) {
             // No schedule assignment found for this employee on this date.
-            // Fall back to a standard 7am-4pm default so hours/late/undertime
-            // can still be computed; HR should assign a proper schedule.
-            return new WorkSchedule(0, '07:00', '16:00', 60, 480);
+            // Fall back to a standard 7am-4pm default with a 12:00-13:00 break
+            // so hours/late/undertime can still be computed; HR should assign a proper schedule.
+            return new WorkSchedule(0, '07:00', '16:00', 60, 480, 0, false, '12:00', '13:00');
         }
 
         $stmt = $this->pdo->prepare(
             "SELECT schedule_id, work_start_time, work_end_time,
-                    break_minutes, standard_minutes, grace_minutes, overtime_allowed
+                    break_minutes, break_start_time, break_end_time,
+                    standard_minutes, grace_minutes, overtime_allowed
                FROM work_schedule
               WHERE schedule_id = :id"
         );
@@ -296,7 +302,7 @@ final class PdoAttendanceImportGateway implements AttendanceImportGateway
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if (!$row) {
-            return new WorkSchedule(0, '07:00', '16:00', 60, 480);
+            return new WorkSchedule(0, '07:00', '16:00', 60, 480, 0, false, '12:00', '13:00');
         }
 
         return new WorkSchedule(
@@ -307,6 +313,8 @@ final class PdoAttendanceImportGateway implements AttendanceImportGateway
             (int) $row['standard_minutes'],
             (int) $row['grace_minutes'],
             (bool) $row['overtime_allowed'],
+            $row['break_start_time'] !== null ? substr((string) $row['break_start_time'], 0, 5) : null,
+            $row['break_end_time'] !== null ? substr((string) $row['break_end_time'], 0, 5) : null,
         );
     }
 
@@ -320,7 +328,8 @@ final class PdoAttendanceImportGateway implements AttendanceImportGateway
             "SELECT COUNT(*) FROM biometric_punch
               WHERE device_id            = :device_id
                 AND device_employee_code = :code
-                AND source_local_at      = :local_at"
+                AND source_local_at      = :local_at
+                AND match_status         = 'matched'"
         );
         $stmt->execute([
             ':device_id' => $punch->deviceId,
@@ -381,7 +390,15 @@ final class PdoAttendanceImportGateway implements AttendanceImportGateway
                  'Unknown', :match_status,
                  :dept, :src_user_id, :src_name,
                  :raw, :row, :col,
-                 :now)"
+                 :now)
+             ON DUPLICATE KEY UPDATE
+                import_batch_id      = VALUES(import_batch_id),
+                employee_id          = VALUES(employee_id),
+                branch_assignment_id = VALUES(branch_assignment_id),
+                match_status         = VALUES(match_status),
+                source_department    = VALUES(source_department),
+                source_user_id       = VALUES(source_user_id),
+                source_employee_name = VALUES(source_employee_name)"
         );
         $stmt->execute([
             ':batch_id'     => $batchId,
@@ -616,23 +633,23 @@ final class PdoAttendanceImportGateway implements AttendanceImportGateway
         $scheduleId = $this->scheduleIdOn($employeeId, $date);
         $schedule   = $this->effectiveSchedule($scheduleId, $date);
         $timezone   = new DateTimeZone('Asia/Manila');
-        $first      = new DateTimeImmutable((string) $punches[0]['source_local_at'], $timezone);
-        $last       = count($punches) > 1
-            ? new DateTimeImmutable((string) $punches[array_key_last($punches)]['source_local_at'], $timezone)
-            : null;
+        $result     = (new PunchDayClassifier())->classify(
+            array_map(
+                static fn (array $p): DateTimeImmutable => new DateTimeImmutable((string) $p['source_local_at'], $timezone),
+                $punches,
+            ),
+            $schedule,
+        );
 
-        $worked = $late = $undertime = $overtime = 0;
-        $status = 'Incomplete';
-        $timeIn  = $first->format('H:i:s');
-        $timeOut = $last?->format('H:i:s');
-        if ($last === null && $schedule->isTimeOutPunch($first)) {
-            [$timeIn, $timeOut] = [null, $timeIn];
-        }
-        if ($last !== null) {
-            [$worked, $late, $undertime] = $schedule->minutesFor($first, $last);
-            $overtime = $this->approvedOvertimeMinutes($employeeId, $date, $first->format('H:i:s'), $last->format('H:i:s'), $schedule);
-            $status   = count($punches) > 2 ? 'ReviewRequired' : 'Complete';
-        }
+        $timeIn    = $result->timeIn?->format('H:i:s');
+        $timeOut   = $result->timeOut?->format('H:i:s');
+        $worked    = $result->workedMinutes;
+        $late      = $result->lateMinutes;
+        $undertime = $result->undertimeMinutes;
+        $status    = $result->status;
+        $overtime  = ($timeIn !== null && $timeOut !== null)
+            ? $this->approvedOvertimeMinutes($employeeId, $date, $timeIn, $timeOut, $schedule)
+            : 0;
         $ownerBatch = max(array_map(static fn (array $p): int => (int) $p['import_batch_id'], $punches));
 
         $this->pdo->prepare(
@@ -662,6 +679,360 @@ final class PdoAttendanceImportGateway implements AttendanceImportGateway
             ':id'          => $attendanceId,
         ]);
         return true;
+    }
+
+    /**
+     * Re-match previously unmatched or coverage_exception punches across live
+     * import batches and generate/rebuild affected attendance rows.
+     *
+     * Automatically invoked after creating/updating/rehiring an employee's
+     * biometric enrollment, or triggered explicitly by HR from the Attendance
+     * screen ("Re-match Unmatched Punches").
+     *
+     * @return array{rematched_punches:int,still_unmatched:int,days_updated:int,batches_updated:int}
+     */
+    public function rematchUnmatchedPunches(?int $deviceId = null, ?string $enrollmentCode = null, ?int $actingUserId = null): array
+    {
+        $where = [
+            "bp.match_status IN ('unmatched', 'coverage_exception')",
+            "aib.status IN ('Draft', 'Approved', 'Completed')",
+        ];
+        $params = [];
+        if ($deviceId !== null && $deviceId > 0) {
+            $where[] = 'bp.device_id = :device_id';
+            $params[':device_id'] = $deviceId;
+        }
+        if ($enrollmentCode !== null && $enrollmentCode !== '') {
+            $where[] = 'bp.device_employee_code = :code';
+            $params[':code'] = $enrollmentCode;
+        }
+
+        $stmt = $this->pdo->prepare(
+            "SELECT bp.punch_id, bp.import_batch_id, bp.device_id, bp.device_employee_code,
+                    bp.source_local_at, bp.source_workbook_row, bp.source_date_column,
+                    bp.raw_record, bp.source_department, bp.source_user_id, bp.source_employee_name
+               FROM biometric_punch bp
+               JOIN attendance_import_batch aib ON aib.import_batch_id = bp.import_batch_id
+              WHERE " . implode(' AND ', $where) . "
+              ORDER BY bp.source_local_at, bp.punch_id"
+        );
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        if ($rows === []) {
+            return [
+                'rematched_punches' => 0,
+                'still_unmatched'   => 0,
+                'days_updated'      => 0,
+                'batches_updated'   => 0,
+            ];
+        }
+
+        $timezone = new DateTimeZone('Asia/Manila');
+        $now = $this->utcNow();
+        $generator = new \Wbpms\Domain\Attendance\TimesheetGenerator();
+
+        $approvedPayrollStmt = $this->pdo->prepare(
+            "SELECT COUNT(*)
+               FROM payroll p
+               JOIN payroll_run pr ON pr.payroll_run_id = p.payroll_run_id
+               JOIN payroll_period pp ON pp.payroll_period_id = pr.payroll_period_id
+              WHERE p.employee_id = :emp_id
+                AND pr.status = 'Approved'
+                AND :punch_date BETWEEN pp.period_start AND pp.period_end"
+        );
+        $assignmentStmt = $this->pdo->prepare(
+            "SELECT branch_assignment_id
+               FROM employee_branch_assignment
+              WHERE employee_id = :emp_id
+                AND effective_from <= :from_date
+                AND (effective_to IS NULL OR effective_to > :to_date)
+              ORDER BY effective_from DESC
+              LIMIT 1"
+        );
+        $updatePunchStmt = $this->pdo->prepare(
+            "UPDATE biometric_punch
+                SET employee_id          = :emp_id,
+                    branch_assignment_id = :ba_id,
+                    match_status         = :status,
+                    resolved_by          = :resolved_by,
+                    resolved_at          = :resolved_at
+              WHERE punch_id = :punch_id"
+        );
+
+        $rematched = 0;
+        $stillUnmatched = 0;
+        $groups = [];
+        $touchedBatches = [];
+
+        foreach ($rows as $row) {
+            $localTimestamp = new DateTimeImmutable((string) $row['source_local_at'], $timezone);
+            $punch = new ParsedPunch(
+                (int) $row['device_id'],
+                (string) $row['device_employee_code'],
+                $localTimestamp,
+                (int) $row['source_workbook_row'],
+                (string) $row['source_date_column'],
+                (string) $row['raw_record'],
+                $row['source_department'] !== null ? (string) $row['source_department'] : null,
+                $row['source_user_id'] !== null ? (string) $row['source_user_id'] : null,
+                $row['source_employee_name'] !== null ? (string) $row['source_employee_name'] : null,
+            );
+            $match = $this->match($punch);
+            if ($match->status !== AttendancePunchMatch::MATCHED || $match->employeeId === null) {
+                $stillUnmatched++;
+                if ($match->status !== '') {
+                    $updatePunchStmt->execute([
+                        ':emp_id'      => null,
+                        ':ba_id'       => null,
+                        ':status'      => $match->status,
+                        ':resolved_by' => null,
+                        ':resolved_at' => null,
+                        ':punch_id'    => (int) $row['punch_id'],
+                    ]);
+                }
+                continue;
+            }
+
+            $punchDate = $localTimestamp->format('Y-m-d');
+            $approvedPayrollStmt->execute([
+                ':emp_id'     => $match->employeeId,
+                ':punch_date' => $punchDate,
+            ]);
+            if ((int) $approvedPayrollStmt->fetchColumn() > 0) {
+                $stillUnmatched++;
+                continue;
+            }
+
+            $assignmentStmt->execute([
+                ':emp_id'    => $match->employeeId,
+                ':from_date' => $punchDate,
+                ':to_date'   => $punchDate,
+            ]);
+            $baId = $assignmentStmt->fetchColumn();
+
+            $updatePunchStmt->execute([
+                ':emp_id'      => $match->employeeId,
+                ':ba_id'       => $baId !== false ? (int) $baId : null,
+                ':status'      => AttendancePunchMatch::MATCHED,
+                ':resolved_by' => $actingUserId !== null && $actingUserId > 0 ? $actingUserId : null,
+                ':resolved_at' => $now,
+                ':punch_id'    => (int) $row['punch_id'],
+            ]);
+
+            $rematched++;
+            $batchId = (int) $row['import_batch_id'];
+            $touchedBatches[$batchId] = true;
+
+            $groupKey = $match->employeeId . ':' . $punchDate;
+            $groups[$groupKey] ??= [
+                'batchId'    => $batchId,
+                'employeeId' => $match->employeeId,
+                'scheduleId' => $match->scheduleId,
+                'date'       => $punchDate,
+                'punches'    => [],
+            ];
+            $groups[$groupKey]['batchId'] = max($groups[$groupKey]['batchId'], $batchId);
+            $groups[$groupKey]['punches'][] = $punch;
+        }
+
+        $daysUpdated = 0;
+        foreach ($groups as $group) {
+            $attendance = $generator->generate(
+                $group['employeeId'],
+                $group['date'],
+                $group['punches'],
+                $this->effectiveSchedule($group['scheduleId'], $group['date']),
+            );
+            $this->saveGeneratedAttendance($group['batchId'], $attendance);
+            $daysUpdated++;
+        }
+
+        // Recount batch statistics for all affected batches
+        foreach (array_keys($touchedBatches) as $batchId) {
+            $this->recountBatchCounters($batchId);
+        }
+
+        return [
+            'rematched_punches' => $rematched,
+            'still_unmatched'   => $stillUnmatched,
+            'days_updated'      => $daysUpdated,
+            'batches_updated'   => count($touchedBatches),
+        ];
+    }
+
+    /**
+     * Recompute matched / unmatched / incomplete / multi-punch counters on a batch.
+     */
+    public function recountBatchCounters(int $batchId): void
+    {
+        $punchCounts = $this->pdo->prepare(
+            "SELECT
+                SUM(CASE WHEN match_status = 'matched' THEN 1 ELSE 0 END) AS matched,
+                SUM(CASE WHEN match_status IN ('unmatched', 'coverage_exception') THEN 1 ELSE 0 END) AS unmatched
+               FROM biometric_punch
+              WHERE import_batch_id = :id"
+        );
+        $punchCounts->execute([':id' => $batchId]);
+        $pc = $punchCounts->fetch(PDO::FETCH_ASSOC) ?: [];
+
+        $attCounts = $this->pdo->prepare(
+            "SELECT
+                SUM(CASE WHEN status = 'Incomplete' THEN 1 ELSE 0 END) AS incomplete,
+                SUM(CASE WHEN status = 'ReviewRequired' THEN 1 ELSE 0 END) AS multi
+               FROM attendance
+              WHERE import_batch_id = :id AND status <> 'Cancelled'"
+        );
+        $attCounts->execute([':id' => $batchId]);
+        $ac = $attCounts->fetch(PDO::FETCH_ASSOC) ?: [];
+
+        $this->pdo->prepare(
+            "UPDATE attendance_import_batch
+                SET records_matched   = :matched,
+                    records_unmatched = :unmatched,
+                    incomplete_days   = :incomplete,
+                    multi_punch_days  = :multi
+              WHERE import_batch_id = :id"
+        )->execute([
+            ':matched'    => (int) ($pc['matched']    ?? 0),
+            ':unmatched'  => (int) ($pc['unmatched']  ?? 0),
+            ':incomplete' => (int) ($ac['incomplete'] ?? 0),
+            ':multi'      => (int) ($ac['multi']      ?? 0),
+            ':id'         => $batchId,
+        ]);
+    }
+
+    /**
+     * Dry-run diagnostic for an enrollment code on a device across a set of dates.
+     *
+     * @param list<string> $dates
+     * @return array{status:string,employee_id:int|null,employee_name:string|null,employee_number:string|null,branch_name:string|null,reason:string}
+     */
+    public function diagnoseEnrollmentMatch(int $deviceId, string $enrollmentCode, array $dates): array
+    {
+        $sampleDate = $dates[0] ?? date('Y-m-d');
+        $lastDate   = $dates[array_key_last($dates)] ?? $sampleDate;
+
+        // Check if enrollment code exists on this device at all
+        $stmt = $this->pdo->prepare(
+            "SELECT ebe.employee_id, ebe.effective_from, ebe.effective_to, ebe.status AS ebe_status,
+                    e.employee_number, CONCAT(e.last_name, ', ', e.first_name) AS employee_name,
+                    e.status AS emp_status
+               FROM employee_biometric_enrollment ebe
+               JOIN employee e ON e.employee_id = ebe.employee_id
+              WHERE ebe.device_id = :device_id
+                AND ebe.device_employee_code = :code
+              ORDER BY ebe.effective_from DESC
+              LIMIT 1"
+        );
+        $stmt->execute([':device_id' => $deviceId, ':code' => $enrollmentCode]);
+        $ebe = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$ebe) {
+            return [
+                'status'          => 'unmatched',
+                'employee_id'     => null,
+                'employee_name'   => null,
+                'employee_number' => null,
+                'branch_name'     => null,
+                'reason'          => 'Unregistered Enroll ID on this biometric device',
+            ];
+        }
+
+        $employeeId = (int) $ebe['employee_id'];
+        $empName    = (string) $ebe['employee_name'];
+        $empNum     = (string) $ebe['employee_number'];
+        $ebeFrom    = (string) $ebe['effective_from'];
+        $ebeTo      = $ebe['effective_to'] !== null ? (string) $ebe['effective_to'] : null;
+
+        if ($ebeFrom > $lastDate) {
+            return [
+                'status'          => 'unmatched',
+                'employee_id'     => $employeeId,
+                'employee_name'   => $empName,
+                'employee_number' => $empNum,
+                'branch_name'     => null,
+                'reason'          => "Hire / enrollment effective date ({$ebeFrom}) is after the workbook punch dates",
+            ];
+        }
+
+        if ($ebeTo !== null && $ebeTo <= $sampleDate) {
+            return [
+                'status'          => 'unmatched',
+                'employee_id'     => $employeeId,
+                'employee_name'   => $empName,
+                'employee_number' => $empNum,
+                'branch_name'     => null,
+                'reason'          => "Enrollment ended on {$ebeTo} before the workbook punch dates",
+            ];
+        }
+
+        // Check branch assignment on sample/last date
+        $checkDate = max($sampleDate, $ebeFrom);
+        $baStmt = $this->pdo->prepare(
+            "SELECT eba.branch_id, b.branch_name
+               FROM employee_branch_assignment eba
+               JOIN branch b ON b.branch_id = eba.branch_id
+              WHERE eba.employee_id = :emp_id
+                AND eba.effective_from <= :d1
+                AND (eba.effective_to IS NULL OR eba.effective_to > :d2)
+              ORDER BY eba.effective_from DESC
+              LIMIT 1"
+        );
+        $baStmt->execute([':emp_id' => $employeeId, ':d1' => $checkDate, ':d2' => $checkDate]);
+        $ba = $baStmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$ba) {
+            return [
+                'status'          => 'coverage_exception',
+                'employee_id'     => $employeeId,
+                'employee_name'   => $empName,
+                'employee_number' => $empNum,
+                'branch_name'     => null,
+                'reason'          => "No active branch assignment covers {$checkDate}",
+            ];
+        }
+
+        $branchId   = (int) $ba['branch_id'];
+        $branchName = (string) $ba['branch_name'];
+
+        $covStmt = $this->pdo->prepare(
+            "SELECT COUNT(*) FROM biometric_device_branch
+              WHERE device_id = :device_id
+                AND branch_id = :branch_id
+                AND effective_from <= :d1
+                AND (effective_to IS NULL OR effective_to > :d2)
+                AND status = 'Active'"
+        );
+        $covStmt->execute([
+            ':device_id' => $deviceId,
+            ':branch_id' => $branchId,
+            ':d1'        => $checkDate,
+            ':d2'        => $checkDate,
+        ]);
+        if ((int) $covStmt->fetchColumn() === 0) {
+            return [
+                'status'          => 'coverage_exception',
+                'employee_id'     => $employeeId,
+                'employee_name'   => $empName,
+                'employee_number' => $empNum,
+                'branch_name'     => $branchName,
+                'reason'          => "Device-branch mismatch: selected device does not cover branch '{$branchName}'",
+            ];
+        }
+
+        $partialNote = $ebeFrom > $sampleDate
+            ? "Matched from {$ebeFrom} onward (pre-hire punches before {$ebeFrom} skipped)"
+            : 'Matched';
+
+        return [
+            'status'          => 'matched',
+            'employee_id'     => $employeeId,
+            'employee_name'   => $empName,
+            'employee_number' => $empNum,
+            'branch_name'     => $branchName,
+            'reason'          => $partialNote,
+        ];
     }
 
     // -----------------------------------------------------------------------
@@ -704,6 +1075,8 @@ final class PdoAttendanceImportGateway implements AttendanceImportGateway
             $schedule->unpaidBreakMinutes,
             $schedule->standardMinutes,
             $requests,
+            $schedule->breakStartTime,
+            $schedule->breakEndTime,
         );
     }
 
@@ -737,43 +1110,26 @@ final class PdoAttendanceImportGateway implements AttendanceImportGateway
                 'worked' => $attendance->workedMinutes,
                 'late' => $attendance->lateMinutes,
                 'undertime' => $attendance->undertimeMinutes,
-                'status' => $attendance->isIncomplete() ? 'Incomplete' : (count($attendance->punches) > 2 ? 'ReviewRequired' : 'Complete'),
+                'status' => $attendance->status(),
             ];
         }
 
+        // Every retained punch for the day (earlier uploads and this one),
+        // classified with the same rule as the import itself.
         $timezone = new DateTimeZone('Asia/Manila');
-        $timeIn = new DateTimeImmutable((string) $punches[0], $timezone);
-        $timeOut = count($punches) > 1 ? new DateTimeImmutable((string) $punches[array_key_last($punches)], $timezone) : null;
-        if ($timeOut === null) {
-            // One punch: decide time-in vs time-out with the same midpoint rule
-            // as TimesheetGenerator. Without this, a lone 16:57 punch was saved
-            // and shown as a time-in.
-            $isTimeOut = $schedule->isTimeOutPunch($timeIn);
-            return [
-                'time_in' => $isTimeOut ? null : $timeIn->format('H:i:s'),
-                'time_out' => $isTimeOut ? $timeIn->format('H:i:s') : null,
-                'worked' => 0,
-                'late' => 0,
-                'undertime' => 0,
-                'status' => 'Incomplete',
-            ];
-        }
+        $result   = (new PunchDayClassifier())->classify(
+            array_map(static fn (mixed $at): DateTimeImmutable => new DateTimeImmutable((string) $at, $timezone), $punches),
+            $schedule,
+        );
 
-        [$worked, $late, $undertime] = $this->calculateAttendanceMinutes($timeIn, $timeOut, $schedule);
         return [
-            'time_in' => $timeIn->format('H:i:s'),
-            'time_out' => $timeOut->format('H:i:s'),
-            'worked' => $worked,
-            'late' => $late,
-            'undertime' => $undertime,
-            'status' => count($punches) > 2 ? 'ReviewRequired' : 'Complete',
+            'time_in' => $result->timeIn?->format('H:i:s'),
+            'time_out' => $result->timeOut?->format('H:i:s'),
+            'worked' => $result->workedMinutes,
+            'late' => $result->lateMinutes,
+            'undertime' => $result->undertimeMinutes,
+            'status' => $result->status,
         ];
-    }
-
-    /** @return array{int,int,int} worked, late, undertime */
-    private function calculateAttendanceMinutes(DateTimeImmutable $timeIn, DateTimeImmutable $timeOut, WorkSchedule $schedule): array
-    {
-        return $schedule->minutesFor($timeIn, $timeOut);
     }
 
     private function utcNow(): string

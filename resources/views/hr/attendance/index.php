@@ -1,4 +1,7 @@
-﻿<?php
+<?php
+
+declare(strict_types=1);
+
 /**
  * View: hr/attendance/index  (GET /hr/attendance)
  *
@@ -42,6 +45,20 @@ $dateRangeFrom ??= '';
 $dateRangeTo   ??= '';
 $branchId  ??= null;
 $search    ??= '';
+$unmatchedPunches ??= [];
+$lockedPayrollPeriods ??= [];
+
+$isDateLockedByPayroll = static function (int $empBranchId, string $date) use ($lockedPayrollPeriods): bool {
+    foreach ($lockedPayrollPeriods as $lp) {
+        $lpBranch = isset($lp['branch_id']) && $lp['branch_id'] !== null ? (int) $lp['branch_id'] : null;
+        if (($lpBranch === null || $lpBranch === $empBranchId)
+            && $date >= (string) ($lp['period_start'] ?? '')
+            && $date <= (string) ($lp['period_end'] ?? '')) {
+            return true;
+        }
+    }
+    return false;
+};
 
 // Format a date range label for display
 $rangeLabel = $dateFrom !== '' && $dateTo !== ''
@@ -208,7 +225,7 @@ $rangeLabel = $dateFrom !== '' && $dateTo !== ''
 
             <!-- Submit / clear -->
             <div style="display:flex;gap:.5rem;align-items:flex-end">
-                <button type="submit" class="btn btn-primary" style="padding:.4rem .9rem;font-size:.9rem">Filter</button>
+                <button type="submit" class="btn btn-primary" style="padding:.4rem .9rem;font-size:.9rem">Apply Filters</button>
                 <a href="<?= $base ?>/hr/attendance" class="btn btn-secondary" style="padding:.4rem .9rem;font-size:.9rem">Clear</a>
             </div>
         </div>
@@ -242,13 +259,68 @@ $rangeLabel = $dateFrom !== '' && $dateTo !== ''
     </div>
     <div class="stat-card" style="border-left:4px solid #ef4444">
         <span class="stat-value"><?= (int) $unmatched ?></span>
-        <span class="stat-label">Unmatched Punches</span>
+        <span class="stat-label">
+            <?php if ((int) $unmatched > 0): ?>
+                <a href="#unmatched-punches-panel" style="color:#b91c1c;text-decoration:underline">Unmatched Punches (Resolve <?= \Wbpms\Http\View\Icon::svg('arrow-down', 14) ?>)</a>
+            <?php else: ?>
+                Unmatched Punches
+            <?php endif; ?>
+        </span>
     </div>
 </div>
 
+<?php if ((int) $unmatched > 0): ?>
+<div id="unmatched-punches-panel" class="card no-print" style="margin-bottom:1.25rem;border-left:4px solid #ef4444">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:.75rem">
+        <div>
+            <h3 style="margin:0;font-size:15px;color:#991b1b">Unmatched Biometric Punches in Selected Range (<?= (int) $unmatched ?>)</h3>
+            <p class="muted" style="margin:.25rem 0 0;font-size:12px">
+                Assign the Enroll ID to the employee's Biometric Enrollment (and ensure their Hire/Effective Date and Branch match the device), then click <strong>Re-match Unmatched Punches</strong>.
+            </p>
+        </div>
+        <div style="display:flex;gap:.5rem;align-items:center">
+            <a href="<?= $base ?>/hr/employees" class="btn btn-secondary" style="font-size:12px;padding:6px 10px">Manage Employees</a>
+            <form method="POST" action="<?= $base ?>/hr/attendance/rematch" style="margin:0">
+                <input type="hidden" name="_csrf" value="<?= Formatter::escape($csrf) ?>">
+                <input type="hidden" name="return_to" value="/hr/attendance">
+                <button type="submit" class="btn btn-primary" style="font-size:12px;padding:6px 12px"><?= \Wbpms\Http\View\Icon::svg('refresh') ?> Re-match Unmatched Punches</button>
+            </form>
+        </div>
+    </div>
+    <?php if ($unmatchedPunches !== []): ?>
+    <div class="table-wrap" style="max-height:200px;overflow:auto">
+        <table style="width:100%;font-size:12px;border-collapse:collapse">
+            <thead>
+                <tr>
+                    <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)">Device</th>
+                    <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)">Biometric Enroll ID</th>
+                    <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)">Workbook Name</th>
+                    <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)">Status</th>
+                    <th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--line)">Punches</th>
+                    <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)">Date Window</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($unmatchedPunches as $up): ?>
+                <tr>
+                    <td style="padding:6px 8px;border-bottom:1px solid var(--line)"><?= Formatter::escape((string) ($up['device_name'] ?? '')) ?></td>
+                    <td style="padding:6px 8px;border-bottom:1px solid var(--line)"><code><?= Formatter::escape((string) ($up['device_employee_code'] ?? '')) ?></code></td>
+                    <td style="padding:6px 8px;border-bottom:1px solid var(--line)"><?= Formatter::escape((string) (($up['source_employee_name'] ?? '') !== '' ? $up['source_employee_name'] : '—')) ?></td>
+                    <td style="padding:6px 8px;border-bottom:1px solid var(--line)"><span class="badge badge-red"><?= Formatter::escape((string) ($up['match_status'] ?? 'unmatched')) ?></span></td>
+                    <td style="padding:6px 8px;border-bottom:1px solid var(--line);text-align:right"><?= (int) ($up['punch_count'] ?? 0) ?></td>
+                    <td style="padding:6px 8px;border-bottom:1px solid var(--line)"><?= Formatter::date((string) ($up['first_punch_date'] ?? '')) ?> – <?= Formatter::date((string) ($up['last_punch_date'] ?? '')) ?></td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+    <?php endif; ?>
+</div>
+<?php endif; ?>
+
 <?php if ($incomplete > 0): ?>
 <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:.75rem 1rem;margin-bottom:1rem;color:#92400e;font-size:.875rem">
-    ⚠ <strong><?= (int) $incomplete ?></strong> record(s) are incomplete or require review in this range.
+    <?= \Wbpms\Http\View\Icon::svg('alert') ?> <strong><?= (int) $incomplete ?></strong> record(s) are incomplete or require review in this range.
 </div>
 <?php endif; ?>
 
@@ -369,10 +441,19 @@ $cellStyles = [
                             HOLIDAY
                         </span>
                         <?php elseif ($isAbsent): ?>
-                        <span title="No attendance or approved leave recorded for this completed workday"
+                        <?php $lockedByPayroll = $isDateLockedByPayroll((int) ($employee['branch_id'] ?? 0), $date); ?>
+                        <?php if (!$lockedByPayroll): ?>
+                        <a href="<?= $base ?>/hr/attendance/manual?employee_id=<?= $employeeId ?>&amp;date=<?= Formatter::escape($date) ?>"
+                           title="No biometric attendance or approved leave recorded. Click to record an audited manual attendance override."
+                           style="<?= $cellStyles['Absent'] ?>;display:block;min-width:72px;padding:8px 3px;border:1px solid;border-radius:4px;text-decoration:none;font-size:10px;font-weight:700">
+                            ABSENT
+                        </a>
+                        <?php else: ?>
+                        <span title="Absent (locked by approved payroll period)"
                               style="<?= $cellStyles['Absent'] ?>;display:block;min-width:72px;padding:8px 3px;border:1px solid;border-radius:4px;font-size:10px;font-weight:700">
                             ABSENT
                         </span>
+                        <?php endif; ?>
                         <?php elseif ($isDraftUpload): ?>
                         <span title="Attendance import is awaiting HR approval for this source month"
                               style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8;display:block;min-width:72px;padding:8px 3px;border:1px solid;border-radius:4px;font-size:9px;font-weight:700">
@@ -433,7 +514,7 @@ $cellStyles = [
     <p style="padding:2rem;text-align:center;color:#6b7280">
         No attendance records found for this period.
         <?php if ($dateFrom === ''): ?>
-            <a href="<?= $base ?>/hr/attendance/import">Import a workbook →</a>
+            <a href="<?= $base ?>/hr/attendance/import">Import a workbook <?= \Wbpms\Http\View\Icon::svg('chevron-right') ?></a>
         <?php endif; ?>
     </p>
     <?php else: ?>

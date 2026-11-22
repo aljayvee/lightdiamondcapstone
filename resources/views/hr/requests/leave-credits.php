@@ -22,7 +22,7 @@ $currentYear ??= (int) date('Y');
         <h1>Leave Credit Management</h1>
         <p>View and adjust employee sick leave balances.</p>
     </div>
-    <a href="<?= $base ?>/hr/requests" class="btn btn-secondary">← Back to Requests</a>
+    <a href="<?= $base ?>/hr/requests" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Requests</a>
 </div>
 
 <!-- Year filter -->
@@ -37,7 +37,7 @@ $currentYear ??= (int) date('Y');
                 <?php endfor; ?>
             </select>
         </div>
-        <button type="submit" class="btn btn-primary">Filter</button>
+        <button type="submit" class="btn btn-primary">Apply Filters</button>
     </form>
 </div>
 
@@ -67,7 +67,7 @@ $depleted     = count(array_filter($rows, static fn(array $r): bool => (float) $
     <table class="data-table">
         <thead>
             <tr>
-                <th>Employee #</th>
+                <th>Employee No.</th>
                 <th>Name</th>
                 <th style="text-align:center">Entitled</th>
                 <th style="text-align:center">Used</th>

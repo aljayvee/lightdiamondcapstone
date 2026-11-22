@@ -10,7 +10,11 @@ use Wbpms\Application\PayrollAdjustmentService;
 use Wbpms\Application\PayrollService;
 use Wbpms\Http\Middleware\AuthMiddleware;
 use Wbpms\Http\View\ViewRenderer;
+use Wbpms\Http\View\UserMessage;
 use Wbpms\Infrastructure\Database\Connection;
+use Wbpms\Infrastructure\Persistence\PayrollAttendanceSummaryRepository;
+use Wbpms\Infrastructure\Persistence\PayrollBranchCoverageRepository;
+use Wbpms\Infrastructure\Logging\ErrorLog;
 
 /**
  * PayrollController — HR payroll run management.
@@ -107,7 +111,7 @@ final class PayrollController
         } catch (RuntimeException $e) {
             ViewRenderer::render('hr/payroll/periods', [
                 'periods'      => $service->listPeriods(),
-                'errors'       => [$e->getMessage()],
+                'errors'       => [UserMessage::from($e)],
                 'period_start' => $periodStart,
             ], 'Manage Payroll Periods');
         }
@@ -142,6 +146,9 @@ final class PayrollController
             'periods'  => $periods,
             'branches' => $branches,
             'errors'   => [],
+            // Pre-selected from the "Create run" link on another branch's run.
+            'selectedPeriodId' => max(0, (int) ($_GET['period_id'] ?? 0)),
+            'selectedBranchId' => max(0, (int) ($_GET['branch_id'] ?? 0)),
         ], 'Create Payroll Run');
     }
 
@@ -173,7 +180,7 @@ final class PayrollController
             ViewRenderer::render('hr/payroll/run', [
                 'periods'  => $periods,
                 'branches' => $branches,
-                'errors'   => [$e->getMessage()],
+                'errors'   => [UserMessage::from($e)],
             ], 'Create Payroll Run');
         }
     }
@@ -195,19 +202,45 @@ final class PayrollController
             $earnings = $service->runEarnings($id);
             $deductionSummary = $service->runDeductionSummary($id);
             $deductions = $service->runDeductions($id);
+            $readinessIssues = in_array($run['status'], ['Draft', 'Computed', 'Returned'], true)
+                ? $service->readinessIssues($id)
+                : [];
         } catch (RuntimeException) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
+        // Other branches with attendance in this period (one device can serve
+        // several branches). Informational only: a failure must not hide the run.
+        try {
+            $otherBranches = (new PayrollBranchCoverageRepository($this->makeConnection()))
+                ->otherBranchesWithAttendance($id);
+        } catch (\Throwable $e) {
+            ErrorLog::exception($e, 'payroll other-branch note, run ' . $id);
+            $otherBranches = [];
+        }
+
+        // Days and hours behind each Basic Pay line, so HR can check it
+        // without opening attendance. Informational only, like the note above.
+        try {
+            $attendanceByPayroll = (new PayrollAttendanceSummaryRepository($this->makeConnection()))
+                ->forRun($id);
+        } catch (\Throwable $e) {
+            ErrorLog::exception($e, 'payroll attendance summary, run ' . $id);
+            $attendanceByPayroll = [];
+        }
+
         ViewRenderer::render('hr/payroll/detail', [
+            'otherBranches' => $otherBranches,
+            'attendanceByPayroll' => $attendanceByPayroll,
             'run'     => $run,
             'details' => $details,
             'earningSummary' => $earningSummary,
             'earnings' => $earnings,
             'deductionSummary' => $deductionSummary,
             'deductions' => $deductions,
+            'readinessIssues' => $readinessIssues,
             'errors'  => [],
         ], 'Payroll Run Detail');
     }
@@ -224,7 +257,7 @@ final class PayrollController
         try {
             $payroll = $this->adjustmentService()->findForAdjustment($runId, $payrollId);
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
             $this->redirect('/hr/payroll/' . $runId);
             return;
         }
@@ -269,7 +302,7 @@ final class PayrollController
             ViewRenderer::render('hr/payroll/adjust', [
                 'runId' => $runId,
                 'payroll' => $payroll,
-                'errors' => [$e->getMessage()],
+                'errors' => [UserMessage::from($e)],
                 'old' => $input,
             ], 'Adjust Payroll');
         }
@@ -286,10 +319,13 @@ final class PayrollController
         $identity = AuthMiddleware::identity();
 
         try {
-            $this->makeService()->computeRun($id, (int) ($identity['user_id'] ?? 0));
-            ViewRenderer::flash('Payroll computed successfully. Review figures before submitting.');
+            $confirmed  = ($_POST['confirm_unresolved_days'] ?? '') === '1';
+            $unresolved = $this->makeService()->computeRunIfReady($id, (int) ($identity['user_id'] ?? 0), $confirmed);
+            ViewRenderer::flash($unresolved > 0
+                ? "Payroll computed. {$unresolved} unresolved day(s) were left unpaid as you confirmed. Review figures before submitting."
+                : 'Payroll computed successfully. Review figures before submitting.');
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/hr/payroll/' . $id);
@@ -309,7 +345,7 @@ final class PayrollController
             $this->makeService()->submitForApproval($id, (int) ($identity['user_id'] ?? 0));
             ViewRenderer::flash('Payroll run submitted to the Business Owner for approval.');
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/hr/payroll');
@@ -331,7 +367,7 @@ final class PayrollController
             ViewRenderer::flash('Payroll run cancelled. Its history was retained and you can now create a corrected run for this period and branch.');
             $this->redirect('/hr/payroll');
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
             $this->redirect('/hr/payroll/' . $id);
         }
     }
@@ -355,7 +391,7 @@ final class PayrollController
         $data = $this->resolvePayslipForRun($runId, $payslipId);
         if ($data === null) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
@@ -408,7 +444,7 @@ final class PayrollController
             $run = $this->makeService()->findRunOrFail($runId);
         } catch (RuntimeException) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
@@ -483,7 +519,7 @@ final class PayrollController
             $run = $this->makeService()->findRunOrFail($runId);
         } catch (RuntimeException) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
@@ -790,9 +826,9 @@ final class PayrollController
             $runId     = (int) ($m[1] ?? 0);
             $pdfUrl    = $base . '/hr/payroll/' . $runId . '/payslips/' . $payslipId . '/download';
             $html .= '<div class="no-print controls">';
-            $html .= '<button onclick="window.print()" style="padding:6px 16px;cursor:pointer">🖨 Print</button>';
-            $html .= '<a href="' . $e($pdfUrl) . '" style="padding:6px 16px;background:#1d4ed8;color:#fff;text-decoration:none;border-radius:4px">⬇ Download PDF</a>';
-            $html .= '<a href="' . $e($base . $backPath) . '" style="padding:6px 16px;border:1px solid #d1d5db;border-radius:4px;text-decoration:none;color:#374151">← Back to Payroll Run</a>';
+            $html .= '<button onclick="window.print()" style="padding:6px 16px;cursor:pointer">' . \Wbpms\Http\View\Icon::svg('printer') . ' Print</button>';
+            $html .= '<a href="' . $e($pdfUrl) . '" style="padding:6px 16px;background:#1d4ed8;color:#fff;text-decoration:none;border-radius:4px">' . \Wbpms\Http\View\Icon::svg('download') . ' Download PDF</a>';
+            $html .= '<a href="' . $e($base . $backPath) . '" style="padding:6px 16px;border:1px solid #d1d5db;border-radius:4px;text-decoration:none;color:#374151">' . \Wbpms\Http\View\Icon::svg('chevron-left') . ' Back to Payroll Run</a>';
             $html .= '</div>';
         }
 

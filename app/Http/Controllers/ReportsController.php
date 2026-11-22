@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Wbpms\Http\Controllers;
 
+use Wbpms\Http\View\Formatter;
 use Wbpms\Http\View\ViewRenderer;
 use Wbpms\Infrastructure\Database\Connection;
 use Wbpms\Infrastructure\Reports\PdfRenderer;
@@ -38,12 +39,17 @@ final class ReportsController
             "SELECT COUNT(*) FROM payroll_run WHERE status = 'Approved'"
         )->fetchColumn();
 
-        $approvedNetPay = (float) $pdo->query(
-            "SELECT COALESCE(SUM(p.net_pay), 0)
+        $totalsRow = $pdo->query(
+            "SELECT COALESCE(SUM(p.gross_pay), 0)        AS gross,
+                    COALESCE(SUM(p.total_deductions), 0) AS deductions,
+                    COALESCE(SUM(p.net_pay), 0)          AS net
                FROM payroll p
                JOIN payroll_run pr ON pr.payroll_run_id = p.payroll_run_id
               WHERE pr.status = 'Approved'"
-        )->fetchColumn();
+        )->fetch(\PDO::FETCH_ASSOC);
+        $approvedGrossPay        = (float) ($totalsRow['gross']      ?? 0);
+        $approvedTotalDeductions = (float) ($totalsRow['deductions'] ?? 0);
+        $approvedNetPay          = (float) ($totalsRow['net']        ?? 0);
 
         $totalRequests = (int) $pdo->query(
             "SELECT COUNT(*) FROM request"
@@ -53,10 +59,11 @@ final class ReportsController
             "SELECT pp.period_start,
                     pp.period_end,
                     b.branch_name,
-                    COUNT(p.payroll_id)   AS emp_count,
-                    SUM(p.gross_pay)      AS gross,
-                    SUM(p.net_pay)        AS net,
-                    pr.reviewed_at        AS approved_at
+                    COUNT(p.payroll_id)          AS emp_count,
+                    SUM(p.gross_pay)             AS gross,
+                    SUM(p.total_deductions)      AS deductions,
+                    SUM(p.net_pay)               AS net,
+                    pr.reviewed_at               AS approved_at
                FROM payroll_run pr
                JOIN payroll_period pp ON pp.payroll_period_id = pr.payroll_period_id
                JOIN branch b          ON b.branch_id          = pr.branch_id
@@ -69,11 +76,13 @@ final class ReportsController
         )->fetchAll();
 
         ViewRenderer::render('hr/reports/index', [
-            'totalEmployees'  => $totalEmployees,
-            'approvedPayroll' => $approvedPayroll,
-            'approvedNetPay'  => $approvedNetPay,
-            'totalRequests'   => $totalRequests,
-            'payrollSummary'  => $payrollSummary,
+            'totalEmployees'          => $totalEmployees,
+            'approvedPayroll'         => $approvedPayroll,
+            'approvedGrossPay'        => $approvedGrossPay,
+            'approvedTotalDeductions' => $approvedTotalDeductions,
+            'approvedNetPay'          => $approvedNetPay,
+            'totalRequests'           => $totalRequests,
+            'payrollSummary'          => $payrollSummary,
         ], 'Reports');
     }
 
@@ -182,7 +191,7 @@ final class ReportsController
 
         $employees = $pdo->query(
             "SELECT employee_id, CONCAT(last_name, ', ', first_name) AS employee_name
-               FROM employee WHERE status = 'Active' ORDER BY last_name, first_name"
+               FROM employee ORDER BY last_name, first_name"
         )->fetchAll();
 
         $periods = $pdo->query(
@@ -267,7 +276,7 @@ final class ReportsController
         $type = (string) ($params['type'] ?? '');
         if (!in_array($type, ['payroll', 'attendance', 'requests', 'contributions', 'employees'], true)) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
@@ -300,6 +309,7 @@ final class ReportsController
         $branchId = filter_var($_GET['branch_id'] ?? 0, FILTER_VALIDATE_INT);
         $branchId = $branchId !== false && $branchId > 0 ? (int) $branchId : 0;
 
+        $periodParamProvided = array_key_exists('payroll_period_id', $_GET);
         $periodId = filter_var($_GET['payroll_period_id'] ?? 0, FILTER_VALIDATE_INT);
         $periodId = $periodId !== false && $periodId > 0 ? (int) $periodId : 0;
 
@@ -320,6 +330,10 @@ final class ReportsController
               LIMIT 60"
         )->fetchAll();
 
+        if (!$periodParamProvided && $periodId === 0 && $periods !== []) {
+            $periodId = (int) $periods[0]['payroll_period_id'];
+        }
+
         // Payslip data — always run the query (even with no filter) so the
         // report shows all approved payslips by default. Optional filters
         // narrow the result set. Then load the full earnings + deductions
@@ -339,11 +353,11 @@ final class ReportsController
                 $bind[':branch_id']   = $branchId;
             }
             if ($employeeSearch !== '') {
-                $where[] = '(e.last_name LIKE :emp_last OR e.first_name LIKE :emp_first OR e.employee_number LIKE :emp_num)';
-                $pattern = '%' . $employeeSearch . '%';
-                $bind[':emp_last']  = $pattern;
-                $bind[':emp_first'] = $pattern;
-                $bind[':emp_num']   = $pattern;
+                [$nameSql, $nameParams] = \Wbpms\Infrastructure\Persistence\EmployeeNameSearch::condition($employeeSearch, 'e', 'emp_q');
+                if ($nameSql !== '') {
+                    $where[] = $nameSql;
+                    $bind    = array_merge($bind, $nameParams);
+                }
             }
 
             $stmt = $pdo->prepare(
@@ -427,11 +441,11 @@ final class ReportsController
             $bind[':branch_id']  = $branchId;
         }
         if ($employeeSearch !== '') {
-            $where[] = '(e.last_name LIKE :emp_last OR e.first_name LIKE :emp_first OR e.employee_number LIKE :emp_num)';
-            $pattern = '%' . $employeeSearch . '%';
-            $bind[':emp_last']  = $pattern;
-            $bind[':emp_first'] = $pattern;
-            $bind[':emp_num']   = $pattern;
+            [$nameSql, $nameParams] = \Wbpms\Infrastructure\Persistence\EmployeeNameSearch::condition($employeeSearch, 'e', 'emp_q');
+            if ($nameSql !== '') {
+                $where[] = $nameSql;
+                $bind    = array_merge($bind, $nameParams);
+            }
         }
 
         $stmt = $pdo->prepare(
@@ -463,7 +477,7 @@ final class ReportsController
         $n = static fn(float $v): string  => number_format($v, 2);
         $f = static fn(\DateTimeInterface|string|null $v): string => PdfRenderer::formatDate($v);
 
-        $generatedDate = (new \DateTimeImmutable())->format('m/d/Y');
+        $generatedDate = (new \DateTimeImmutable())->format('m/d/y');
 
         // ----------------------------------------------------------------
         // Build standalone print document
@@ -521,8 +535,8 @@ body{font-family:"DejaVu Sans",Arial,Helvetica,sans-serif;font-size:10px;backgro
 </style></head><body>';
 
         $html .= '<div class="no-print controls">';
-        $html .= '<button onclick="window.print()" style="padding:5px 14px;background:#1d4ed8;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px">🖨 Print All Payslips</button>';
-        $html .= '<a href="' . $e($backUrl) . '" style="padding:5px 12px;border:1px solid #d1d5db;border-radius:4px;font-size:12px;text-decoration:none;color:#374151">← Back to Payslip Report</a>';
+        $html .= '<button onclick="window.print()" style="padding:5px 14px;background:#1d4ed8;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px">' . \Wbpms\Http\View\Icon::svg('printer') . ' Print All Payslips</button>';
+        $html .= '<a href="' . $e($backUrl) . '" style="padding:5px 12px;border:1px solid #d1d5db;border-radius:4px;font-size:12px;text-decoration:none;color:#374151">' . \Wbpms\Http\View\Icon::svg('chevron-left') . ' Back to Payslip Report</a>';
         $html .= '<small>' . count($payslips) . ' payslip(s) &nbsp;|&nbsp; Generated: ' . $e($generatedDate) . '</small>';
         $html .= '</div>';
 
@@ -675,11 +689,11 @@ body{font-family:"DejaVu Sans",Arial,Helvetica,sans-serif;font-size:10px;backgro
                         $bind[':branch_id']  = $branchId;
                     }
                     if ($employeeSearch !== '') {
-                        $where[] = '(e.last_name LIKE :emp_last OR e.first_name LIKE :emp_first OR e.employee_number LIKE :emp_num)';
-                        $pat = '%' . $employeeSearch . '%';
-                        $bind[':emp_last'] = $pat;
-                        $bind[':emp_first'] = $pat;
-                        $bind[':emp_num']   = $pat;
+                        [$nameSql, $nameParams] = \Wbpms\Infrastructure\Persistence\EmployeeNameSearch::condition($employeeSearch, 'e', 'emp_q');
+                        if ($nameSql !== '') {
+                            $where[] = $nameSql;
+                            $bind    = array_merge($bind, $nameParams);
+                        }
                     }
 
                     $idStmt = $pdo->prepare(
@@ -701,17 +715,13 @@ body{font-family:"DejaVu Sans",Arial,Helvetica,sans-serif;font-size:10px;backgro
                     if ($format === 'csv') {
                         $csvHeaders = ['Employee #', 'Employee Name', 'Branch', 'Period', 'Gross Pay', 'Total Deductions', 'Net Pay', 'Approved At'];
                         $csvRows    = [];
-                        foreach ($matched as $m) {
-                            // Use the plain summary query result already in $matched for speed,
-                            // but we need gross/net — reuse payslipData or just re-query.
-                            // To avoid N queries for CSV we fetch summary data directly.
-                        }
                         // Re-query for CSV summary data
                         $sumStmt = $pdo->prepare(
                             "SELECT e.employee_number,
                                     CONCAT(e.last_name, ', ', e.first_name) AS employee_name,
                                     b.branch_name,
-                                    CONCAT(pp.period_start, ' – ', pp.period_end) AS period_label,
+                                    pp.period_start,
+                                    pp.period_end,
                                     p.gross_pay, p.total_deductions, p.net_pay,
                                     pr.reviewed_at AS approved_at
                                FROM payslip ps
@@ -730,11 +740,11 @@ body{font-family:"DejaVu Sans",Arial,Helvetica,sans-serif;font-size:10px;backgro
                                 $r['employee_number'],
                                 $r['employee_name'],
                                 $r['branch_name'],
-                                $r['period_label'],
+                                Formatter::date((string) $r['period_start']) . ' – ' . Formatter::date((string) $r['period_end']),
                                 number_format((float) $r['gross_pay'], 2, '.', ''),
                                 number_format((float) $r['total_deductions'], 2, '.', ''),
                                 number_format((float) $r['net_pay'], 2, '.', ''),
-                                (string) ($r['approved_at'] ?? ''),
+                                Formatter::date($r['approved_at'] ?? null),
                             ];
                         }
                         $slug     = 'payslips';
@@ -864,7 +874,7 @@ body{font-family:"DejaVu Sans",Arial,Helvetica,sans-serif;font-size:10px;backgro
             }
         }
 
-        $generatedDate = (new \DateTimeImmutable())->format('m/d/Y');
+        $generatedDate = (new \DateTimeImmutable())->format('m/d/y');
 
         $csvUrl = '?' . http_build_query(array_merge($_GET, ['format' => 'csv']));
         $pdfUrl = '?' . http_build_query(array_merge($_GET, ['format' => 'pdf']));
@@ -888,10 +898,10 @@ body{font-family:"DejaVu Sans",Arial,Helvetica,sans-serif;font-size:10px;backgro
 
         if ($includeControls) {
             $html .= '<div class="no-print" style="margin-bottom:10px;display:flex;gap:8px;align-items:center">'
-                   . '<button onclick="window.print()" style="padding:4px 12px;cursor:pointer">🖨 Print</button>'
-                   . '<a href="' . $e($pdfUrl) . '" style="padding:4px 10px;background:#374151;color:#fff;text-decoration:none;border-radius:4px;font-size:11px">⬇ PDF</a>'
-                   . '<a href="' . $e($csvUrl) . '" style="padding:4px 10px;background:#4f46e5;color:#fff;text-decoration:none;border-radius:4px;font-size:11px">⬇ CSV</a>'
-                   . '<button onclick="history.back()" style="padding:4px 10px;cursor:pointer">← Back</button>'
+                   . '<button onclick="window.print()" style="padding:4px 12px;cursor:pointer">' . \Wbpms\Http\View\Icon::svg('printer') . ' Print</button>'
+                   . '<a href="' . $e($pdfUrl) . '" style="padding:4px 10px;background:#374151;color:#fff;text-decoration:none;border-radius:4px;font-size:11px">' . \Wbpms\Http\View\Icon::svg('file-down') . ' PDF</a>'
+                   . '<a href="' . $e($csvUrl) . '" style="padding:4px 10px;background:#4f46e5;color:#fff;text-decoration:none;border-radius:4px;font-size:11px">' . \Wbpms\Http\View\Icon::svg('sheet') . ' CSV</a>'
+                   . '<button onclick="history.back()" style="padding:4px 10px;cursor:pointer">' . \Wbpms\Http\View\Icon::svg('chevron-left') . ' Back</button>'
                    . '</div>';
         }
 
@@ -933,7 +943,7 @@ body{font-family:"DejaVu Sans",Arial,Helvetica,sans-serif;font-size:10px;backgro
         $n = static fn(float $v): string => number_format($v, 2);
         $f = static fn(\DateTimeInterface|string|null $v): string => PdfRenderer::formatDate($v);
 
-        $generatedDate = (new \DateTimeImmutable())->format('m/d/Y');
+        $generatedDate = (new \DateTimeImmutable())->format('m/d/y');
 
         $totalGross = 0.0;
         $totalDeductions = 0.0;
@@ -978,10 +988,10 @@ body{font-family:"DejaVu Sans",Arial,Helvetica,sans-serif;font-size:10px;backgro
 
         if ($includeControls) {
             $html .= '<div class="no-print" style="margin-bottom:10px;display:flex;gap:8px;align-items:center">'
-                   . '<button onclick="window.print()" style="padding:4px 12px;cursor:pointer">🖨 Print</button>'
-                   . '<a href="' . $e($pdfUrl) . '" style="padding:4px 10px;background:#374151;color:#fff;text-decoration:none;border-radius:4px;font-size:11px">⬇ PDF</a>'
-                   . '<a href="' . $e($csvUrl) . '" style="padding:4px 10px;background:#4f46e5;color:#fff;text-decoration:none;border-radius:4px;font-size:11px">⬇ CSV</a>'
-                   . '<button onclick="history.back()" style="padding:4px 10px;cursor:pointer">← Back</button>'
+                   . '<button onclick="window.print()" style="padding:4px 12px;cursor:pointer">' . \Wbpms\Http\View\Icon::svg('printer') . ' Print</button>'
+                   . '<a href="' . $e($pdfUrl) . '" style="padding:4px 10px;background:#374151;color:#fff;text-decoration:none;border-radius:4px;font-size:11px">' . \Wbpms\Http\View\Icon::svg('file-down') . ' PDF</a>'
+                   . '<a href="' . $e($csvUrl) . '" style="padding:4px 10px;background:#4f46e5;color:#fff;text-decoration:none;border-radius:4px;font-size:11px">' . \Wbpms\Http\View\Icon::svg('sheet') . ' CSV</a>'
+                   . '<button onclick="history.back()" style="padding:4px 10px;cursor:pointer">' . \Wbpms\Http\View\Icon::svg('chevron-left') . ' Back</button>'
                    . '</div>';
         }
 
@@ -1075,7 +1085,7 @@ body{font-family:"DejaVu Sans",Arial,Helvetica,sans-serif;font-size:10px;backgro
     }
 
     /**
-     * @return array{branch_id:int,date_from:string,date_to:string,employee_search:string,status:string,type_id:int,program:string}
+     * @return array{branch_id:int,date_from:string,date_to:string,employee_search:string,status:string,type_id:int,program:string,view:string}
      */
     private function previewFilters(string $type): array
     {
@@ -1085,12 +1095,13 @@ body{font-family:"DejaVu Sans",Arial,Helvetica,sans-serif;font-size:10px;backgro
         $typeId = filter_var($_GET['type_id'] ?? 0, FILTER_VALIDATE_INT);
         $validStatuses = match ($type) {
             'attendance' => ['Complete', 'Approved', 'Incomplete', 'ReviewRequired'],
-            'requests'   => ['Pending', 'HRApproved', 'Approved', 'Cancelled'],
+            'requests'   => ['Pending', 'HRApproved', 'Approved', 'Returned', 'Cancelled'],
             'employees'  => ['Active', 'Inactive', 'Separated', 'Archived'],
             default      => [],
         };
         $status = trim((string) ($_GET['status'] ?? ''));
         $program = trim((string) ($_GET['program'] ?? ''));
+        $view = trim((string) ($_GET['view'] ?? ''));
 
         return [
             'branch_id' => $branchId !== false && $branchId > 0 ? $branchId : 0,
@@ -1100,11 +1111,12 @@ body{font-family:"DejaVu Sans",Arial,Helvetica,sans-serif;font-size:10px;backgro
             'status' => in_array($status, $validStatuses, true) ? $status : '',
             'type_id' => $typeId !== false && $typeId > 0 ? $typeId : 0,
             'program' => in_array($program, ['SSS', 'PhilHealth', 'PagIBIG'], true) ? $program : '',
+            'view' => $type === 'payroll' ? (in_array($view, ['employees', 'runs'], true) ? $view : 'employees') : '',
         ];
     }
 
     /**
-     * @param array{branch_id:int,date_from:string,date_to:string,employee_search:string,status:string,type_id:int,program:string} $filters
+     * @param array{branch_id:int,date_from:string,date_to:string,employee_search:string,status:string,type_id:int,program:string,view?:string} $filters
      * @return array{0:list<string>,1:list<list<string|int|float>>}
      */
     private function previewData(string $type, array $filters): array
@@ -1118,11 +1130,11 @@ body{font-family:"DejaVu Sans",Arial,Helvetica,sans-serif;font-size:10px;backgro
             if ($search === '') {
                 return;
             }
-            $where[] = "({$employeeAlias}.last_name LIKE :employee_search_last OR {$employeeAlias}.first_name LIKE :employee_search_first OR {$employeeAlias}.employee_number LIKE :employee_search_number)";
-            $pattern = '%' . $search . '%';
-            $bind[':employee_search_last'] = $pattern;
-            $bind[':employee_search_first'] = $pattern;
-            $bind[':employee_search_number'] = $pattern;
+            [$nameSql, $nameParams] = \Wbpms\Infrastructure\Persistence\EmployeeNameSearch::condition($search, $employeeAlias, 'employee_q');
+            if ($nameSql !== '') {
+                $where[] = $nameSql;
+                $bind    = array_merge($bind, $nameParams);
+            }
         };
 
         if ($type === 'payroll') {
@@ -1139,6 +1151,38 @@ body{font-family:"DejaVu Sans",Arial,Helvetica,sans-serif;font-size:10px;backgro
                 $where[] = 'pp.period_end <= :date_to';
                 $bind[':date_to'] = $filters['date_to'];
             }
+            $payrollView = $filters['view'] ?? 'employees';
+            if ($payrollView === 'employees' || $employeeSearch !== '') {
+                $applyEmployeeSearch($where, $bind, $employeeSearch, 'e');
+                $stmt = $pdo->prepare(
+                    "SELECT e.employee_number,
+                            CONCAT(e.last_name, ', ', e.first_name) AS employee_name,
+                            b.branch_name,
+                            pp.period_start, pp.period_end,
+                            p.gross_pay, p.total_deductions, p.net_pay,
+                            pr.reviewed_at AS approved_at
+                       FROM payroll p
+                       JOIN payroll_run pr ON pr.payroll_run_id = p.payroll_run_id
+                       JOIN payroll_period pp ON pp.payroll_period_id = pr.payroll_period_id
+                       JOIN branch b ON b.branch_id = pr.branch_id
+                       JOIN employee e ON e.employee_id = p.employee_id
+                      WHERE " . implode(' AND ', $where) . "
+                      ORDER BY pp.period_start DESC, e.last_name, e.first_name
+                      LIMIT 500"
+                );
+                $stmt->execute($bind);
+                $rows = array_map(static fn(array $row): array => [
+                    (string) $row['employee_number'],
+                    (string) $row['employee_name'],
+                    (string) $row['branch_name'],
+                    Formatter::date((string) $row['period_start']) . ' – ' . Formatter::date((string) $row['period_end']),
+                    '₱' . number_format((float) $row['gross_pay'], 2),
+                    '₱' . number_format((float) $row['total_deductions'], 2),
+                    '₱' . number_format((float) $row['net_pay'], 2),
+                    Formatter::date($row['approved_at'] ?? null),
+                ], $stmt->fetchAll());
+                return [['Employee #', 'Employee Name', 'Branch', 'Period', 'Gross Pay', 'Total Deductions', 'Net Pay', 'Approved At'], $rows];
+            }
             $stmt = $pdo->prepare(
                 "SELECT b.branch_name, pp.period_start, pp.period_end, COUNT(p.payroll_id) AS emp_count,
                         COALESCE(SUM(p.gross_pay), 0) AS gross, COALESCE(SUM(p.total_deductions), 0) AS deductions,
@@ -1153,14 +1197,22 @@ body{font-family:"DejaVu Sans",Arial,Helvetica,sans-serif;font-size:10px;backgro
             );
             $stmt->execute($bind);
             $rows = array_map(static fn(array $row): array => [
-                $row['branch_name'], $row['period_start'] . ' – ' . $row['period_end'], (int) $row['emp_count'],
-                '₱' . number_format((float) $row['gross'], 2), '₱' . number_format((float) $row['deductions'], 2),
-                '₱' . number_format((float) $row['net'], 2), (string) ($row['approved_at'] ?? '—'),
+                $row['branch_name'],
+                Formatter::date((string) $row['period_start']) . ' – ' . Formatter::date((string) $row['period_end']),
+                (int) $row['emp_count'],
+                '₱' . number_format((float) $row['gross'], 2),
+                '₱' . number_format((float) $row['deductions'], 2),
+                '₱' . number_format((float) $row['net'], 2),
+                Formatter::date($row['approved_at'] ?? null),
             ], $stmt->fetchAll());
             return [['Branch', 'Period', 'Employees', 'Gross Pay', 'Total Deductions', 'Net Pay', 'Approved At'], $rows];
         }
 
         if ($type === 'attendance') {
+            $where = [
+                "a.status <> 'Cancelled'",
+                "(a.import_batch_id IS NULL OR aib.status IN ('Approved', 'Completed'))",
+            ];
             if ($filters['date_from'] !== '') { $where[] = 'a.attendance_date >= :date_from'; $bind[':date_from'] = $filters['date_from']; }
             if ($filters['date_to'] !== '') { $where[] = 'a.attendance_date <= :date_to'; $bind[':date_to'] = $filters['date_to']; }
             if ($filters['branch_id'] > 0) { $where[] = 'eba.branch_id = :branch_id'; $bind[':branch_id'] = $filters['branch_id']; }
@@ -1169,13 +1221,25 @@ body{font-family:"DejaVu Sans",Arial,Helvetica,sans-serif;font-size:10px;backgro
             $stmt = $pdo->prepare(
                 "SELECT CONCAT(e.last_name, ', ', e.first_name) AS name, a.attendance_date, a.time_in, a.time_out,
                         a.hours_worked_minutes, a.late_minutes, a.undertime_minutes, a.overtime_minutes, a.status
-                   FROM attendance a JOIN employee e ON e.employee_id = a.employee_id
+                   FROM attendance a
+                   JOIN employee e ON e.employee_id = a.employee_id
                    JOIN employee_branch_assignment eba ON eba.branch_assignment_id = a.branch_assignment_id
-                  " . ($where === [] ? '' : 'WHERE ' . implode(' AND ', $where)) . "
+                   LEFT JOIN attendance_import_batch aib ON aib.import_batch_id = a.import_batch_id
+                  WHERE " . implode(' AND ', $where) . "
                   ORDER BY a.attendance_date DESC, e.last_name LIMIT 500"
             );
             $stmt->execute($bind);
-            $rows = array_map(static fn(array $row): array => [$row['name'], $row['attendance_date'], $row['time_in'] ?? '—', $row['time_out'] ?? '—', (int) $row['hours_worked_minutes'], (int) $row['late_minutes'], (int) $row['undertime_minutes'], (int) $row['overtime_minutes'], $row['status']], $stmt->fetchAll());
+            $rows = array_map(static fn(array $row): array => [
+                $row['name'],
+                Formatter::date((string) $row['attendance_date']),
+                $row['time_in'] ?? '—',
+                $row['time_out'] ?? '—',
+                (int) $row['hours_worked_minutes'],
+                (int) $row['late_minutes'],
+                (int) $row['undertime_minutes'],
+                (int) $row['overtime_minutes'],
+                $row['status'],
+            ], $stmt->fetchAll());
             return [['Employee', 'Date', 'Time In', 'Time Out', 'Worked (min)', 'Late (min)', 'Undertime (min)', 'Overtime (min)', 'Status'], $rows];
         }
 
@@ -1193,7 +1257,13 @@ body{font-family:"DejaVu Sans",Arial,Helvetica,sans-serif;font-size:10px;backgro
                   WHERE " . implode(' AND ', $where) . " ORDER BY r.submitted_at DESC LIMIT 500"
             );
             $stmt->execute($bind);
-            $rows = array_map(static fn(array $row): array => [$row['name'], $row['type_name'], $row['submitted_at'], $row['status'], $row['reason']], $stmt->fetchAll());
+            $rows = array_map(static fn(array $row): array => [
+                $row['name'],
+                $row['type_name'],
+                Formatter::date($row['submitted_at'] ?? null),
+                $row['status'],
+                $row['reason'],
+            ], $stmt->fetchAll());
             return [['Employee', 'Type', 'Submitted', 'Status', 'Reason'], $rows];
         }
 
@@ -1204,7 +1274,7 @@ body{font-family:"DejaVu Sans",Arial,Helvetica,sans-serif;font-size:10px;backgro
             if ($filters['program'] !== '') { $where[] = 'cr.contribution_type = :program'; $bind[':program'] = $filters['program']; }
             $applyEmployeeSearch($where, $bind, $employeeSearch);
             $stmt = $pdo->prepare(
-                "SELECT CONCAT(e.last_name, ', ', e.first_name) AS name, CONCAT(pp.period_start, ' – ', pp.period_end) AS period,
+                "SELECT CONCAT(e.last_name, ', ', e.first_name) AS name, pp.period_start, pp.period_end,
                         pp.pay_date,
                         SUM(CASE WHEN cr.contribution_type = 'SSS' THEN cr.employee_share ELSE 0 END) AS sss,
                         SUM(CASE WHEN cr.contribution_type = 'PhilHealth' THEN cr.employee_share ELSE 0 END) AS phil,
@@ -1219,7 +1289,15 @@ body{font-family:"DejaVu Sans",Arial,Helvetica,sans-serif;font-size:10px;backgro
                   ORDER BY pp.period_start DESC, e.last_name LIMIT 500"
             );
             $stmt->execute($bind);
-            $rows = array_map(static fn(array $row): array => [$row['name'], $row['period'], $row['pay_date'], '₱' . number_format((float) $row['sss'], 2), '₱' . number_format((float) $row['phil'], 2), '₱' . number_format((float) $row['pag'], 2), '₱' . number_format((float) $row['total'], 2)], $stmt->fetchAll());
+            $rows = array_map(static fn(array $row): array => [
+                $row['name'],
+                Formatter::date((string) $row['period_start']) . ' – ' . Formatter::date((string) $row['period_end']),
+                Formatter::date((string) $row['pay_date']),
+                '₱' . number_format((float) $row['sss'], 2),
+                '₱' . number_format((float) $row['phil'], 2),
+                '₱' . number_format((float) $row['pag'], 2),
+                '₱' . number_format((float) $row['total'], 2),
+            ], $stmt->fetchAll());
             return [['Employee', 'Period', 'Pay Date', 'SSS Employee', 'PhilHealth Employee', 'Pag-IBIG Employee', 'Total'], $rows];
         }
 
@@ -1228,7 +1306,15 @@ body{font-family:"DejaVu Sans",Arial,Helvetica,sans-serif;font-size:10px;backgro
         $applyEmployeeSearch($where, $bind, $employeeSearch);
         $stmt = $pdo->prepare(
             "SELECT e.employee_number, CONCAT(e.last_name, ', ', e.first_name) AS name, e.position, b.branch_name, e.employee_type, e.status
-               FROM employee e LEFT JOIN employee_branch_assignment eba ON eba.employee_id = e.employee_id AND eba.effective_to IS NULL
+               FROM employee e
+               LEFT JOIN employee_branch_assignment eba
+                 ON eba.branch_assignment_id = (
+                     SELECT eba2.branch_assignment_id
+                       FROM employee_branch_assignment eba2
+                      WHERE eba2.employee_id = e.employee_id
+                      ORDER BY (eba2.effective_to IS NULL) DESC, eba2.effective_from DESC, eba2.branch_assignment_id DESC
+                      LIMIT 1
+                 )
                LEFT JOIN branch b ON b.branch_id = eba.branch_id
               " . ($where === [] ? '' : 'WHERE ' . implode(' AND ', $where)) . " ORDER BY e.last_name, e.first_name LIMIT 500"
         );

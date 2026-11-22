@@ -16,13 +16,13 @@ final class AttendanceScheduleWorkdayTest extends TestCase
         $pdo = new PDO('sqlite::memory:');
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $pdo->exec('CREATE TABLE work_schedule (schedule_id INTEGER PRIMARY KEY, working_days TEXT NOT NULL)');
-        $pdo->exec('CREATE TABLE employee_schedule_assignment (employee_id INTEGER NOT NULL, schedule_id INTEGER NOT NULL, effective_from TEXT NOT NULL, effective_to TEXT NULL)');
+        $pdo->exec("CREATE TABLE employee_schedule_assignment (employee_id INTEGER NOT NULL, schedule_id INTEGER NOT NULL, effective_from TEXT NOT NULL, effective_to TEXT NULL, status TEXT NOT NULL DEFAULT 'Active')");
         $pdo->exec("INSERT INTO work_schedule (schedule_id, working_days) VALUES
             (1, '[\"Monday\",\"Tuesday\",\"Wednesday\",\"Thursday\",\"Friday\"]'),
             (2, '[\"Tuesday\",\"Wednesday\",\"Thursday\",\"Friday\",\"Saturday\"]')");
-        $pdo->exec("INSERT INTO employee_schedule_assignment (employee_id, schedule_id, effective_from, effective_to) VALUES
-            (21, 1, '2026-09-01', '2026-09-15'),
-            (21, 2, '2026-09-16', NULL)");
+        $pdo->exec("INSERT INTO employee_schedule_assignment (employee_id, schedule_id, effective_from, effective_to, status) VALUES
+            (21, 1, '2026-09-01', '2026-09-15', 'Archived'),
+            (21, 2, '2026-09-16', NULL, 'Active')");
 
         $method = new ReflectionMethod(AttendanceController::class, 'scheduledWorkingDays');
         $workdays = $method->invoke(
@@ -46,7 +46,7 @@ final class AttendanceScheduleWorkdayTest extends TestCase
         $pdo = new PDO('sqlite::memory:');
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $pdo->exec('CREATE TABLE work_schedule (schedule_id INTEGER PRIMARY KEY, working_days TEXT NOT NULL)');
-        $pdo->exec('CREATE TABLE employee_schedule_assignment (employee_id INTEGER NOT NULL, schedule_id INTEGER NOT NULL, effective_from TEXT NOT NULL, effective_to TEXT NULL)');
+        $pdo->exec("CREATE TABLE employee_schedule_assignment (employee_id INTEGER NOT NULL, schedule_id INTEGER NOT NULL, effective_from TEXT NOT NULL, effective_to TEXT NULL, status TEXT NOT NULL DEFAULT 'Active')");
 
         $method = new ReflectionMethod(AttendanceController::class, 'scheduledWorkingDays');
         $workdays = $method->invoke(
@@ -85,5 +85,35 @@ final class AttendanceScheduleWorkdayTest extends TestCase
         self::assertSame('Covered', $coverage[21]['2026-09-14']);
         self::assertSame('Draft', $coverage[21]['2026-10-01']);
         self::assertArrayNotHasKey(22, $coverage);
+    }
+
+    public function testUploadCoverageBoundsPartialMonthBatchesToActualPunchRange(): void
+    {
+        $pdo = new PDO('sqlite::memory:');
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $pdo->exec('CREATE TABLE attendance_import_batch (import_batch_id INTEGER PRIMARY KEY, device_id INTEGER NOT NULL, source_year INTEGER NOT NULL, source_month INTEGER NOT NULL, status TEXT NOT NULL)');
+        $pdo->exec('CREATE TABLE biometric_punch (punch_id INTEGER PRIMARY KEY AUTOINCREMENT, import_batch_id INTEGER NOT NULL, source_local_at TEXT NOT NULL)');
+        $pdo->exec('CREATE TABLE biometric_device_branch (device_id INTEGER NOT NULL, branch_id INTEGER NOT NULL, effective_from TEXT NOT NULL, effective_to TEXT NULL)');
+        $pdo->exec('CREATE TABLE employee_branch_assignment (employee_id INTEGER NOT NULL, branch_id INTEGER NOT NULL, effective_from TEXT NOT NULL, effective_to TEXT NULL)');
+        $pdo->exec("INSERT INTO attendance_import_batch VALUES (10, 1, 2026, 8, 'Approved')");
+        $pdo->exec("INSERT INTO biometric_punch (import_batch_id, source_local_at) VALUES
+            (10, '2026-08-02 07:00:00'),
+            (10, '2026-08-28 16:00:00')");
+        $pdo->exec("INSERT INTO biometric_device_branch VALUES (1, 5, '2026-01-01', NULL)");
+        $pdo->exec("INSERT INTO employee_branch_assignment VALUES (21, 5, '2026-01-01', NULL)");
+
+        $method = new ReflectionMethod(AttendanceController::class, 'attendanceUploadCoverage');
+        $coverage = $method->invoke(
+            new AttendanceController(),
+            $pdo,
+            [['employee_id' => 21]],
+            ['2026-08-01', '2026-08-02', '2026-08-28', '2026-08-30', '2026-08-31'],
+        );
+
+        self::assertArrayNotHasKey('2026-08-01', $coverage[21] ?? []);
+        self::assertSame('Covered', $coverage[21]['2026-08-02']);
+        self::assertSame('Covered', $coverage[21]['2026-08-28']);
+        self::assertArrayNotHasKey('2026-08-30', $coverage[21] ?? []);
+        self::assertArrayNotHasKey('2026-08-31', $coverage[21] ?? []);
     }
 }

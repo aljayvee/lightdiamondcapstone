@@ -1,9 +1,13 @@
 ﻿<?php
 /**
  * View: owner/payroll/review  (GET /owner/payroll/{id}/review)
- * Variables: $run, $details, $earningSummary, $earnings, $deductionSummary, $deductions, $errors
+ * Variables: $run, $details, $earningSummary, $earnings, $deductionSummary, $deductions, $errors,
+ *            $attendanceByPayroll (days/hours behind Basic Pay, keyed by payroll_id)
  */
+use Wbpms\Http\View\Formatter;
+
 $errors  ??= [];
+$attendanceByPayroll ??= [];
 $details ??= [];
 $earningSummary ??= [];
 $earnings ??= [];
@@ -35,7 +39,7 @@ foreach ($deductions as $deduction) {
         <p><?= htmlspecialchars($run['period_label']) ?></p>
     </div>
     <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;justify-content:flex-end">
-        <a href="<?= $base ?>/owner/payroll" class="btn btn-secondary">← Back to Approvals</a>
+        <a href="<?= $base ?>/owner/payroll" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Approvals</a>
         <a href="<?= $base ?>/payroll/<?= $runId ?>/timesheet" class="btn btn-secondary" style="font-size:.8rem">Cut-off Timesheet</a>
         <a href="<?= $base ?>/payroll/<?= $runId ?>/disbursement-summary" class="btn btn-secondary" style="font-size:.8rem">Disbursement Summary</a>
         <span style="background:<?= $sc ?>;color:#fff;padding:4px 14px;border-radius:9999px;font-size:.875rem"><?= htmlspecialchars($run['status'] === 'PendingOwnerApproval' ? 'Pending Your Approval' : $run['status']) ?></span>
@@ -126,7 +130,18 @@ foreach ($deductions as $deduction) {
                             <summary style="cursor:pointer;color:#047857">View <?= count($employeeEarnings) ?> item<?= count($employeeEarnings) === 1 ? '' : 's' ?></summary>
                             <ul style="margin:.5rem 0 0;padding-left:1rem;font-size:.82rem;min-width:180px">
                             <?php foreach ($employeeEarnings as $item): ?>
-                                <li><?= htmlspecialchars($item['earning_type']) ?> — <strong>₱<?= number_format((float) $item['amount'], 2) ?></strong><br><small style="color:#6b7280"><?= htmlspecialchars($item['description']) ?></small></li>
+                                <li><?= htmlspecialchars($item['earning_type']) ?> — <strong>₱<?= number_format((float) $item['amount'], 2) ?></strong><br><small style="color:#6b7280"><?= htmlspecialchars($item['description']) ?></small>
+                                <?php if ($item['earning_type'] === 'Basic' && (float) $item['quantity'] > 0): ?>
+                                    <br><small style="color:#374151"><?= Formatter::escape(Formatter::quantity((float) $item['quantity'])) ?> day<?= (float) $item['quantity'] === 1.0 ? '' : 's' ?> × ₱<?= number_format((float) $item['unit_rate'], 2) ?></small>
+                                <?php endif; ?>
+                                <?php $basicAttendance = $attendanceByPayroll[(int) $d['payroll_id']] ?? null; ?>
+                                <?php if ($item['earning_type'] === 'Basic' && $item['description'] === 'Basic Pay' && $basicAttendance !== null): ?>
+                                    <br><small style="color:#374151" title="Complete/Approved attendance in this period, as counted by Compute">Attendance: <?= (int) $basicAttendance['days'] ?> day<?= (int) $basicAttendance['days'] === 1 ? '' : 's' ?> · <?= Formatter::escape(Formatter::hoursMinutes((int) $basicAttendance['worked_minutes'])) ?> worked<?php if ((int) $basicAttendance['late_minutes'] > 0): ?> · late <?= Formatter::escape(Formatter::hoursMinutes((int) $basicAttendance['late_minutes'])) ?><?php endif; ?><?php if ((int) $basicAttendance['undertime_minutes'] > 0): ?> · undertime <?= Formatter::escape(Formatter::hoursMinutes((int) $basicAttendance['undertime_minutes'])) ?><?php endif; ?></small>
+                                    <?php if ((int) $basicAttendance['days'] !== (int) round((float) $item['quantity'])): ?>
+                                        <br><small class="basic-attendance-differs" style="color:#b45309">Attendance days differ from Basic Pay days. If attendance changed after Compute, compute again.</small>
+                                    <?php endif; ?>
+                                <?php endif; ?>
+                                </li>
                             <?php endforeach; ?>
                             </ul>
                         </details>
@@ -155,9 +170,9 @@ foreach ($deductions as $deduction) {
                     <div style="display:flex;flex-direction:column;gap:.3rem;align-items:flex-end">
                         <a href="<?= $base ?>/hr/payroll/<?= $runId ?>/payslips/<?= (int) $d['payslip_id'] ?>/print"
                            target="_blank" rel="noopener"
-                           class="btn btn-secondary" style="padding:.3rem .65rem;font-size:.8rem">🖨 Print</a>
+                           class="btn btn-secondary" style="padding:.3rem .65rem;font-size:.8rem"><?= \Wbpms\Http\View\Icon::svg('printer') ?> Print</a>
                         <a href="<?= $base ?>/hr/payroll/<?= $runId ?>/payslips/<?= (int) $d['payslip_id'] ?>/download"
-                           class="btn btn-secondary" style="padding:.3rem .65rem;font-size:.8rem">⬇ PDF</a>
+                           class="btn btn-secondary" style="padding:.3rem .65rem;font-size:.8rem"><?= \Wbpms\Http\View\Icon::svg('file-down') ?> PDF</a>
                     </div>
                     <?php else: ?>
                     <span style="color:#6b7280">—</span>
@@ -189,10 +204,10 @@ foreach ($deductions as $deduction) {
         <h3 style="margin:0 0 .75rem;color:#166534">Approve Payroll</h3>
         <p style="font-size:.875rem;color:#374151;margin:0 0 1rem">Approving will finalize this run. This cannot be reversed.</p>
         <form method="post" action="<?= $base ?>/owner/payroll/<?= $runId ?>/approve"
-              onsubmit="return confirm('Approve this payroll run? This action cannot be undone.')">
+              data-confirm="Approve this payroll run? This action cannot be undone.">
             <input type="hidden" name="_csrf" value="<?= htmlspecialchars($csrf) ?>">
             <button type="submit" class="btn btn-primary" style="width:100%;background:#16a34a">
-                ✓ Approve Payroll
+                <?= \Wbpms\Http\View\Icon::svg('check') ?> Approve Payroll
             </button>
         </form>
     </div>
@@ -215,15 +230,15 @@ foreach ($deductions as $deduction) {
                 <?php endif; ?>
             </div>
             <button type="submit" class="btn btn-secondary" style="width:100%;border-color:#ef4444;color:#ef4444"
-                    onclick="return confirm('Return this payroll run to HR for revision?')">
-                ↩ Return to HR
+                    data-confirm="Return this payroll run to HR for revision?">
+                <?= \Wbpms\Http\View\Icon::svg('undo') ?> Return to HR
             </button>
         </form>
     </div>
 
 </div>
 <?php elseif ($run['status'] === 'Approved'): ?>
-<p style="color:#10b981;font-weight:600;font-size:1rem">✓ This payroll run has been approved and is now read-only.</p>
+<p style="color:#10b981;font-weight:600;font-size:1rem"><?= \Wbpms\Http\View\Icon::svg('check') ?> This payroll run has been approved and is now read-only.</p>
 <?php elseif ($run['status'] === 'Returned'): ?>
 <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;padding:.75rem 1rem;color:#991b1b">
     <strong>Returned with reason:</strong> <?= htmlspecialchars((string)$run['return_reason']) ?>

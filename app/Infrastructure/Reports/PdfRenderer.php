@@ -85,7 +85,7 @@ final class PdfRenderer
 
         $date = is_string($value) ? new \DateTimeImmutable($value) : $value;
 
-        return $date->format('m/d/Y');
+        return $date->format('m/d/y');
     }
 
     // -----------------------------------------------------------------------

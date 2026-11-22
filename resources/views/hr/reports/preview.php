@@ -16,7 +16,7 @@ $hasStatusFilter = in_array($type, ['attendance', 'requests', 'employees'], true
 $printQuery = http_build_query(array_filter(['type' => $type] + $filters, static fn(mixed $value): bool => $value !== '' && $value !== 0));
 $statusOptions = match ($type) {
     'attendance' => ['Complete', 'Approved', 'Incomplete', 'ReviewRequired'],
-    'requests' => ['Pending', 'HRApproved', 'Approved', 'Cancelled'],
+    'requests' => ['Pending', 'HRApproved', 'Approved', 'Returned', 'Cancelled'],
     'employees' => ['Active', 'Inactive', 'Separated', 'Archived'],
     default => [],
 };
@@ -28,13 +28,13 @@ $statusOptions = match ($type) {
         <p>Apply filters and review the results before exporting.</p>
     </div>
     <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
-        <a href="<?= $base ?>/hr/reports" class="btn btn-secondary">← Back</a>
+        <a href="<?= $base ?>/hr/reports" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back</a>
         <a href="<?= $base ?>/hr/reports/export?<?= Formatter::escape($printQuery) ?>"
-           class="btn btn-secondary" target="_blank" rel="noopener">🖨 Print</a>
+           class="btn btn-secondary" target="_blank" rel="noopener"><?= \Wbpms\Http\View\Icon::svg('printer') ?> Print</a>
         <a href="<?= $base ?>/hr/reports/export?<?= Formatter::escape($printQuery) ?>&amp;format=pdf"
-           class="btn btn-secondary" target="_blank" rel="noopener">⬇ PDF</a>
+           class="btn btn-secondary" target="_blank" rel="noopener"><?= \Wbpms\Http\View\Icon::svg('file-down') ?> PDF</a>
         <a href="<?= $base ?>/hr/reports/export?<?= Formatter::escape($printQuery) ?>&amp;format=csv"
-           class="btn btn-primary">⬇ CSV</a>
+           class="btn btn-primary"><?= \Wbpms\Http\View\Icon::svg('sheet') ?> CSV</a>
     </div>
 </div>
 
@@ -48,7 +48,7 @@ $statusOptions = match ($type) {
         <div><label style="font-size:.8rem;font-weight:500;display:block;margin-bottom:.25rem">Branch</label><select name="branch_id"><option value="">All branches</option><?php foreach ($branches as $branch): ?><option value="<?= (int) $branch['branch_id'] ?>" <?= (int) $branch['branch_id'] === (int) ($filters['branch_id'] ?? 0) ? 'selected' : '' ?>><?= Formatter::escape($branch['branch_name']) ?></option><?php endforeach; ?></select></div>
         <?php endif; ?>
         <?php if ($type === 'requests'): ?>
-        <div><label style="font-size:.8rem;font-weight:500;display:block;margin-bottom:.25rem">Request type</label><select name="type_id"><option value="">All types</option><?php foreach ($requestTypes as $requestType): ?><option value="<?= (int) $requestType['request_type_id'] ?>" <?= (int) $requestType['request_type_id'] === (int) ($filters['type_id'] ?? 0) ? 'selected' : '' ?>><?= Formatter::escape($requestType['type_name']) ?></option><?php endforeach; ?></select></div>
+        <div><label style="font-size:.8rem;font-weight:500;display:block;margin-bottom:.25rem">Request Type</label><select name="type_id"><option value="">All types</option><?php foreach ($requestTypes as $requestType): ?><option value="<?= (int) $requestType['request_type_id'] ?>" <?= (int) $requestType['request_type_id'] === (int) ($filters['type_id'] ?? 0) ? 'selected' : '' ?>><?= Formatter::escape(Formatter::label($requestType['type_name'])) ?></option><?php endforeach; ?></select></div>
         <?php endif; ?>
         <?php if ($type === 'contributions'): ?>
         <div><label style="font-size:.8rem;font-weight:500;display:block;margin-bottom:.25rem">Program</label><select name="program"><option value="">All programs</option><?php foreach (['SSS', 'PhilHealth', 'PagIBIG'] as $program): ?><option value="<?= $program ?>" <?= ($filters['program'] ?? '') === $program ? 'selected' : '' ?>><?= $program ?></option><?php endforeach; ?></select></div>
@@ -56,9 +56,16 @@ $statusOptions = match ($type) {
         <?php if ($hasStatusFilter): ?>
         <div><label style="font-size:.8rem;font-weight:500;display:block;margin-bottom:.25rem">Status</label><select name="status"><option value="">All</option><?php foreach ($statusOptions as $status): ?><option value="<?= $status ?>" <?= ($filters['status'] ?? '') === $status ? 'selected' : '' ?>><?= $status ?></option><?php endforeach; ?></select></div>
         <?php endif; ?>
-        <?php if ($type !== 'payroll'): ?>
-        <div><label style="font-size:.8rem;font-weight:500;display:block;margin-bottom:.25rem">Employee</label><input type="search" name="employee_search" value="<?= Formatter::escape((string) ($filters['employee_search'] ?? '')) ?>" placeholder="Name or employee no."></div>
+        <?php if ($type === 'payroll'): ?>
+        <div>
+            <label style="font-size:.8rem;font-weight:500;display:block;margin-bottom:.25rem">View</label>
+            <select name="view">
+                <option value="employees" <?= (($filters['view'] ?? 'employees') === 'employees') ? 'selected' : '' ?>>Per-Employee Payroll Register</option>
+                <option value="runs" <?= (($filters['view'] ?? '') === 'runs') ? 'selected' : '' ?>>Payroll Run Summary</option>
+            </select>
+        </div>
         <?php endif; ?>
+        <div><label style="font-size:.8rem;font-weight:500;display:block;margin-bottom:.25rem">Employee</label><input type="search" name="employee_search" value="<?= Formatter::escape((string) ($filters['employee_search'] ?? '')) ?>" placeholder="Name or employee no."></div>
         <button type="submit" class="btn btn-primary">Apply Filters</button>
         <a href="<?= $base ?>/hr/reports/<?= Formatter::escape($type) ?>" class="btn btn-secondary">Clear</a>
     </form>

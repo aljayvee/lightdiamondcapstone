@@ -11,6 +11,7 @@ use Wbpms\Http\View\Formatter;
  *     employee_number: string,
  *     last_name: string,
  *     first_name: string,
+ *     middle_name?: ?string,
  *     position: string,
  *     branch_name: string,
  *     schedule_name: string,
@@ -85,7 +86,7 @@ $positions      ??= [];
                 <option value="archived" <?= $filterStatus === 'archived' ? 'selected' : '' ?>>Archived</option>
             </select>
         </div>
-        <button type="submit" class="btn btn-secondary">Filter</button>
+        <button type="submit" class="btn btn-secondary">Apply Filters</button>
         <?php if ($search !== '' || $filterBranch !== '' || $filterPosition !== '' || $filterStatus !== ''): ?>
         <a href="<?= $base ?>/hr/employees" class="btn btn-secondary">Clear</a>
         <?php endif; ?>
@@ -126,7 +127,9 @@ $positions      ??= [];
             <td><code style="font-size:.8rem"><?= Formatter::escape($emp['employee_number']) ?></code></td>
             <td>
                 <a href="<?= $base ?>/hr/employees/<?= (int) $emp['id'] ?>">
-                    <?= Formatter::escape($emp['last_name']) ?>, <?= Formatter::escape($emp['first_name']) ?>
+                    <?= Formatter::escape($emp['last_name']) ?>, <?= Formatter::escape($emp['first_name']) ?><?php
+                    $middleName = trim((string) ($emp['middle_name'] ?? ''));
+                    if ($middleName !== ''): ?> <?= Formatter::escape($middleName) ?><?php endif; ?>
                 </a>
             </td>
             <td><?= Formatter::escape($emp['position'] ?? '—') ?></td>

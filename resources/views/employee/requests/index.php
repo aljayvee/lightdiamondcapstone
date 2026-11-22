@@ -41,7 +41,7 @@ $statusBadge = static function (string $status): string {
 <div class="page-header">
     <div>
         <h1>My Requests</h1>
-        <a href="<?= $base ?>/employee/dashboard" class="btn btn-secondary">← Back to Dashboard</a>
+        <a href="<?= $base ?>/employee/dashboard" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Dashboard</a>
     </div>
     <a href="<?= $base ?>/employee/requests/new" class="btn btn-primary">New Request</a>
 </div>
@@ -52,7 +52,7 @@ $statusBadge = static function (string $status): string {
     <!-- Sick Leave card -->
     <div class="card" style="padding:1rem 1.25rem">
         <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.6rem">
-            <span style="font-size:1.5rem;line-height:1">🌿</span>
+            <span class="icon-tile"><?= \Wbpms\Http\View\Icon::svg('leaf', 20) ?></span>
             <span style="font-size:.78rem;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.05em">Sick Leave</span>
         </div>
         <div style="display:flex;align-items:baseline;gap:.4rem">
@@ -78,7 +78,7 @@ $statusBadge = static function (string $status): string {
     <!-- Cash Advance card -->
     <div class="card" style="padding:1rem 1.25rem">
         <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.6rem">
-            <span style="font-size:1.5rem;line-height:1">💵</span>
+            <span class="icon-tile"><?= \Wbpms\Http\View\Icon::svg('banknote', 20) ?></span>
             <span style="font-size:.78rem;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.05em">Cash Advance</span>
         </div>
         <?php if ($cashAdvanceMax !== null): ?>
@@ -121,7 +121,7 @@ $statusBadge = static function (string $status): string {
                 <option value="Cancelled" <?= $filterStatus === 'Cancelled' ? 'selected' : '' ?>>Cancelled</option>
             </select>
         </div>
-        <button type="submit" class="btn btn-secondary">Filter</button>
+        <button type="submit" class="btn btn-secondary">Apply Filters</button>
         <?php if ($filterStatus !== ''): ?>
         <a href="<?= $base ?>/employee/requests" class="btn btn-secondary">Clear</a>
         <?php endif; ?>
@@ -133,7 +133,7 @@ $statusBadge = static function (string $status): string {
     <?php if (empty($requests)): ?>
     <p style="padding:1.5rem;color:#6b7280;font-size:.875rem;margin:0">
         No requests found.
-        <a href="<?= $base ?>/employee/requests/new">Submit your first request →</a>
+        <a href="<?= $base ?>/employee/requests/new">Submit your first request <?= \Wbpms\Http\View\Icon::svg('chevron-right') ?></a>
     </p>
     <?php else: ?>
     <table>
@@ -150,7 +150,7 @@ $statusBadge = static function (string $status): string {
         <tbody>
         <?php foreach ($requests as $req): ?>
         <tr>
-            <td style="white-space:nowrap;font-weight:500"><?= Formatter::escape($req['type']) ?></td>
+            <td style="white-space:nowrap;font-weight:500"><?= Formatter::escape(Formatter::label($req['type'])) ?></td>
             <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
                 <?= Formatter::escape($req['summary']) ?>
             </td>
@@ -164,7 +164,7 @@ $statusBadge = static function (string $status): string {
                 <form method="POST"
                       action="<?= $base ?>/employee/requests/<?= (int) $req['id'] ?>/cancel"
                       style="display:inline"
-                      onsubmit="return confirm('Cancel this request?')">
+                      data-confirm="Cancel this request?">
                     <input type="hidden" name="_csrf" value="<?= Formatter::escape($csrf) ?>">
                     <button type="submit" class="btn btn-danger btn-sm">Cancel</button>
                 </form>

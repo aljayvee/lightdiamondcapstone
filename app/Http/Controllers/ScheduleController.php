@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace Wbpms\Http\Controllers;
 
 use Wbpms\Http\View\ViewRenderer;
+use Wbpms\Http\View\UserMessage;
 use Wbpms\Infrastructure\Database\Connection;
 use Wbpms\Infrastructure\Persistence\AttendanceScheduleRecalculator;
 use Wbpms\Infrastructure\Persistence\ScheduleRepository;
+use Wbpms\Infrastructure\Logging\ErrorLog;
 
 /**
  * ScheduleController — HR-only work schedule management.
@@ -113,7 +115,7 @@ final class ScheduleController
                 ? (str_contains($e->getMessage(), 'uq_ws_name')
                     ? $this->duplicateNameMessage($data['schedule_name'])
                     : 'The schedule could not be saved. Check the values and try again.')
-                : $e->getMessage();
+                : UserMessage::from($e);
             $repo = $this->repo();
             $all  = $repo->findAll();
             ViewRenderer::render('hr/schedules/index', [
@@ -146,7 +148,7 @@ final class ScheduleController
 
         if ($schedule === null) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
@@ -175,7 +177,7 @@ final class ScheduleController
 
         if ($repo->findById($id) === null) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
@@ -255,6 +257,13 @@ final class ScheduleController
         $data   = $this->extractAssignFields();
         $errors = $this->validateAssign($data);
 
+        // The dropdown only offers Active employees; a posted id outside that
+        // list (stale page, edited form) used to reach the INSERT and fail on
+        // the employee foreign key.
+        if (!isset($errors['employee_id']) && !$this->repo()->isActiveEmployee((int) $data['employee_id'])) {
+            $errors['employee_id'] = 'Choose an active employee from the list.';
+        }
+
         if ($errors !== []) {
             $repo = $this->repo();
             ViewRenderer::render('hr/schedules/assign', [
@@ -277,9 +286,12 @@ final class ScheduleController
                 'notes'          => $data['notes'] !== '' ? $data['notes'] : null,
             ]);
         } catch (\RuntimeException | \PDOException $e) {
+            if ($e instanceof \PDOException) {
+                ErrorLog::exception($e, 'schedule assign');
+            }
             $message = $e instanceof \PDOException
-                ? 'This effective date overlaps the employee\'s current schedule period. Choose a later date.'
-                : $e->getMessage();
+                ? self::assignFailureMessage($e, ErrorLog::reference())
+                : UserMessage::from($e);
             $repo = $this->repo();
             ViewRenderer::render('hr/schedules/assign', [
                 'employees' => $repo->employeeList(),
@@ -313,7 +325,8 @@ final class ScheduleController
                 static fn (\PDO $pdo): array => $operation(new AttendanceScheduleRecalculator($pdo))
             );
         } catch (\Throwable $e) {
-            ViewRenderer::flashError('The schedule was saved, but existing attendance could not be recalculated: ' . $e->getMessage());
+            ErrorLog::exception($e, 'schedule attendance recalculation');
+            ViewRenderer::flashError(UserMessage::prefixed('The schedule was saved, but existing attendance could not be recalculated', $e));
             return;
         }
 
@@ -375,7 +388,7 @@ final class ScheduleController
                 $this->redirect('/hr/schedules/holidays');
                 return;
             } catch (\RuntimeException $e) {
-                $errors['holiday_date'] = $e->getMessage();
+                $errors['holiday_date'] = UserMessage::from($e);
             }
         }
 
@@ -398,7 +411,7 @@ final class ScheduleController
 
         if ($holiday === null) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
@@ -420,7 +433,7 @@ final class ScheduleController
 
         if ($holiday === null) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
@@ -439,7 +452,7 @@ final class ScheduleController
                 $this->redirect('/hr/schedules/holidays');
                 return;
             } catch (\RuntimeException $e) {
-                $errors['holiday_date'] = $e->getMessage();
+                $errors['holiday_date'] = UserMessage::from($e);
             }
         }
 
@@ -461,7 +474,7 @@ final class ScheduleController
 
         if ($this->repo()->findHolidayById($id) === null) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
@@ -490,7 +503,7 @@ final class ScheduleController
             $this->repo()->archive($id);
             ViewRenderer::flash('Work schedule archived. Existing assignments are unaffected.');
         } catch (\RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/hr/schedules');
@@ -511,7 +524,7 @@ final class ScheduleController
             $this->repo()->restore($id);
             ViewRenderer::flash('Work schedule restored to Active.');
         } catch (\RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/hr/schedules');
@@ -619,7 +632,9 @@ final class ScheduleController
             $errors['time_out'] = 'Time out must use 24-hour HH:MM format.';
         }
 
-        if (!isset($errors['time_in'], $errors['time_out'])) {
+        // Both times must be valid. isset($a, $b) is true only when both are
+        // set, so !isset($a, $b) would run this with one invalid time.
+        if (!isset($errors['time_in']) && !isset($errors['time_out'])) {
             // Convert to total minutes for a reliable numeric comparison.
             // This also correctly rejects overnight spans (e.g. 18:00–06:00)
             // where a raw string comparison would pass if time_out < time_in.
@@ -640,7 +655,8 @@ final class ScheduleController
         $breakMin = (int) $data['break_minutes'];
         if ($breakMin < 0 || $breakMin > 480) {
             $errors['break_minutes'] = 'Break time must be between 0 and 480 minutes.';
-        } elseif (!isset($errors['time_in'], $errors['time_out'])) {
+        } elseif (!isset($errors['time_in']) && !isset($errors['time_out'])) {
+            // Re-checked: the shift check above may have just flagged time_out.
             // Ensure break doesn't consume the entire shift
             [$h1, $m1] = array_map('intval', explode(':', $data['time_in']));
             [$h2, $m2] = array_map('intval', explode(':', $data['time_out']));
@@ -683,7 +699,35 @@ final class ScheduleController
             }
         }
 
+        // Fields the form limits to fixed choices or lengths (REQ024/025).
+        if (($statusError = \Wbpms\Domain\Validation\FieldRules::oneOf((string) ($data['status'] ?? 'Active'), ['Active', 'Archived'], 'Status')) !== null) {
+            $errors['status'] = $statusError;
+        }
+        if (($otError = \Wbpms\Domain\Validation\FieldRules::oneOf((string) ($data['overtime_allowed'] ?? '1'), ['0', '1'], 'Overtime setting')) !== null) {
+            $errors['overtime_allowed'] = $otError;
+        }
+        if (($notesError = \Wbpms\Domain\Validation\FieldRules::maxLength((string) ($data['notes'] ?? ''), 1000, 'Notes')) !== null) {
+            $errors['notes'] = $notesError;
+        }
+
         return $errors;
+    }
+
+    /**
+     * Message for a database error while assigning a schedule. Only the
+     * assignment's own constraints mean a date clash; anything else is not
+     * the user's date and must not be reported as one.
+     */
+    private static function assignFailureMessage(\PDOException $e, string $reference): string
+    {
+        $driverCode = (int) (is_array($e->errorInfo) ? ($e->errorInfo[1] ?? 0) : 0);
+
+        return match ($driverCode) {
+            1062 => 'This employee already has a schedule assignment starting on that date. Choose a different effective date.',
+            4025 => 'This effective date overlaps the employee\'s current schedule period. Choose a later date.',
+            default => 'The schedule could not be assigned. Please try again; if it keeps failing, give the administrator reference '
+                . $reference . '.',
+        };
     }
 
     private function duplicateNameMessage(string $name): string
@@ -738,6 +782,10 @@ final class ScheduleController
             if ($parsed === false || $parsed->format('Y-m-d') !== $data['effective_from']) {
                 $errors['effective_from'] = 'Effective date must be a valid calendar date (YYYY-MM-DD).';
             }
+        }
+
+        if (($notesError = \Wbpms\Domain\Validation\FieldRules::maxLength((string) ($data['notes'] ?? ''), 255, 'Notes')) !== null) {
+            $errors['notes'] = $notesError;
         }
 
         return $errors;

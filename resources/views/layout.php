@@ -40,30 +40,29 @@ $base = rtrim((string) ($_ENV['APP_BASE_URL'] ?? ''), '/');
 // Format: [route_path, label, icon_character, active_key]
 $nav = match ($roleName) {
     'BusinessOwner' => [
-        ['owner/dashboard',  'Dashboard',          '⌂', 'dashboard'],
-        ['users',            'User Management',    '♙', 'users'],
-        ['owner/payroll',    'Payroll Approval',   '₱', 'payroll'],
-        ['owner/requests',   'Request Approvals',  '✉', 'requests'],
-        ['hr/reports',       'Reports',            '▤', 'reports'],
+        ['owner/dashboard',  'Dashboard',          'home', 'dashboard'],
+        ['users',            'User Management',    'user-cog', 'users'],
+        ['owner/payroll',    'Payroll Approval',   'file-check', 'payroll'],
+        ['owner/requests',   'Request Approvals',  'inbox', 'requests'],
+        ['hr/reports',       'Reports',            'chart', 'reports'],
     ],
     'HRHead' => [
-        ['hr/dashboard',     'Dashboard',              '⌂', 'dashboard'],
-        ['hr/employees',     'Employee Management',    '♟', 'employees'],
-        ['hr/attendance',    'Attendance',             '◷', 'attendance'],
-        ['hr/schedules',     'Work Schedule',          '▣', 'schedule'],
-        ['hr/requests',      'Requests',               '▱', 'requests'],
-        ['hr/payroll',       'Payroll Processing',     '₱', 'payroll'],
-        ['hr/salary',        'Salary Management',      '₱', 'salary'],
-        ['hr/benefits',      'Benefits & Deductions',  '＋', 'benefits'],
-        ['hr/reports',       'Reports',                '▤', 'reports'],
-        ['users',            'User Management',        '👤', 'users'],
-        ['hr/settings',      'Settings',               '⚙', 'settings'],
+        ['hr/dashboard',     'Dashboard',              'home', 'dashboard'],
+        ['hr/employees',     'Employee Management',    'users', 'employees'],
+        ['hr/attendance',    'Attendance',             'clock', 'attendance'],
+        ['hr/schedules',     'Work Schedule',          'calendar-days', 'schedule'],
+        ['hr/requests',      'Requests',               'inbox', 'requests'],
+        ['hr/payroll',       'Payroll Processing',     'banknote', 'payroll'],
+        ['hr/salary',        'Salary Management',      'wallet', 'salary'],
+        ['hr/benefits',      'Benefits & Deductions',  'shield-plus', 'benefits'],
+        ['hr/reports',       'Reports',                'chart', 'reports'],
+        ['hr/settings',      'Settings',               'sliders', 'settings'],
     ],
     default => [ // Employee
-        ['employee/dashboard',  'Dashboard',                   '⌂', 'dashboard'],
-        ['employee/attendance', 'My Attendance',               '◷', 'my-attendance'],
-        ['employee/requests',   'Leave / OT / Cash Advance',   '▱', 'my-requests'],
-        ['employee/payslips',   'My Payslips',                 '▤', 'my-payslips'],
+        ['employee/dashboard',  'Dashboard',                   'home', 'dashboard'],
+        ['employee/attendance', 'My Attendance',               'clock', 'my-attendance'],
+        ['employee/requests',   'Leave / OT / Cash Advance',   'inbox', 'my-requests'],
+        ['employee/payslips',   'My Payslips',                 'receipt', 'my-payslips'],
     ],
 };
 ?>
@@ -79,10 +78,12 @@ $nav = match ($roleName) {
     <link rel="icon" type="image/png" sizes="32x32" href="<?= $base ?>/favicon.png">
     <link rel="icon" type="image/png" sizes="16x16" href="<?= $base ?>/favicon-16.png">
     <link rel="stylesheet" href="<?= $base ?>/assets/app.css?v=<?= filemtime(APP_ROOT . '/public/assets/app.css') ?>">
+    <link rel="stylesheet" href="<?= $base ?>/assets/ui-enhance.css?v=<?= filemtime(APP_ROOT . '/public/assets/ui-enhance.css') ?>">
 </head>
-<body>
+<?php // Scopes remembered filters/dates in the browser to this account (ui-enhance.js). ?>
+<body data-user-key="<?= (int) ($identity['user_id'] ?? 0) ?>">
 
-<button class="mobile-toggle" onclick="document.body.classList.toggle('menu-open')" aria-label="Toggle menu">☰</button>
+<button class="mobile-toggle" onclick="document.body.classList.toggle('menu-open')" aria-label="Toggle menu"><?= \Wbpms\Http\View\Icon::svg('menu', 20) ?></button>
 <div class="overlay" onclick="document.body.classList.remove('menu-open')"></div>
 
 <div class="app">
@@ -104,7 +105,7 @@ $nav = match ($roleName) {
             <?php foreach ($nav as [$path, $label, $icon, $key]): ?>
                 <a class="<?= $activePage === $key ? 'active' : '' ?>"
                    href="<?= $base ?>/<?= Formatter::escape($path) ?>">
-                    <i class="nav-icon" aria-hidden="true"><?= $icon ?></i>
+                    <i class="nav-icon" aria-hidden="true"><?= \Wbpms\Http\View\Icon::svg($icon, 18) ?></i>
                     <span><?= Formatter::escape($label) ?></span>
                 </a>
             <?php endforeach; ?>
@@ -112,11 +113,14 @@ $nav = match ($roleName) {
 
         <div class="side-user">
             <b><?= Formatter::escape($displayName) ?></b>
-            <span><?= Formatter::escape($roleName) ?></span>
+            <span><?= Formatter::escape(Formatter::label($roleName)) ?></span>
+            <a href="<?= $base ?>/account/password" class="side-user-logout side-user-link<?= $activePage === 'account' ? ' active' : '' ?>">
+                <?= \Wbpms\Http\View\Icon::svg('key') ?> Change Password
+            </a>
             <form method="POST" action="<?= $base ?>/logout" style="display:inline">
                 <input type="hidden" name="_csrf" value="<?= htmlspecialchars(CsrfMiddleware::token(), ENT_QUOTES, 'UTF-8') ?>">
                 <button type="submit" class="side-user-logout">
-                    ↪ Logout
+                    <?= \Wbpms\Http\View\Icon::svg('log-out') ?> Logout
                 </button>
             </form>
         </div>
@@ -136,7 +140,7 @@ $nav = match ($roleName) {
         <!-- Topbar -->
         <header class="topbar">
             <div class="global-search" role="search">
-                <span aria-hidden="true">⌕</span>
+                <?= \Wbpms\Http\View\Icon::svg('search') ?>
                 <input id="globalSearch"
                        type="search"
                        placeholder="Search modules..."
@@ -167,10 +171,41 @@ $nav = match ($roleName) {
                     <p><strong>Payroll Runs Pending Approval</strong><br>
                         <?= (int) $notifCount ?> payroll run(s) waiting for your final approval.<br>
                         <a href="<?= $base ?>/owner/payroll">Review pending payroll</a></p>
-                    <p><a href="<?= $base ?>/owner/requests">View pending request approvals →</a></p>
+                    <p><a href="<?= $base ?>/owner/requests">View pending request approvals <?= \Wbpms\Http\View\Icon::svg('chevron-right') ?></a></p>
                 <?php elseif ($roleName === 'HRHead'): ?>
-                    <p><strong>Attendance Alerts</strong><br>
-                        <?= (int) $notifCount ?> attendance record(s) with missing punch data.</p>
+                    <?php
+                    // Contractual / Probationary employees due for review. [EMP-024]
+                    $contractReviews ??= [];
+                    $reviewToday = new \DateTimeImmutable('today', new \DateTimeZone('Asia/Manila'));
+                    ?>
+                    <p style="margin-bottom:6px"><strong>Contract Reviews</strong><br>
+                    <?php if ($contractReviews === []): ?>
+                        No contract reviews due in the next <?= \Wbpms\Domain\Employee\ContractReviewPolicy::DUE_SOON_DAYS ?> days.</p>
+                    <?php else: ?>
+                        <?= count($contractReviews) ?> employee(s) to regularise, renew, or end the contract.</p>
+                        <ul class="notif-list">
+                        <?php foreach (array_slice($contractReviews, 0, 8) as $review):
+                            $reviewDays = $review['contract_review_date'] !== null
+                                ? \Wbpms\Domain\Employee\ContractReviewPolicy::daysUntil($review['contract_review_date'], $reviewToday)
+                                : null;
+                            $reviewLate = $reviewDays === null || $reviewDays < 0;
+                        ?>
+                            <li>
+                                <a href="<?= $base ?>/hr/employees/<?= (int) $review['employee_id'] ?>"><?= Formatter::escape($review['name']) ?></a>
+                                <span class="muted">(<?= Formatter::escape($review['employee_type']) ?>)</span><br>
+                                <span class="<?= $reviewLate ? 'notif-late' : 'notif-soon' ?>">
+                                    <?= Formatter::escape(\Wbpms\Domain\Employee\ContractReviewPolicy::label($review['contract_review_date'], $reviewToday)) ?>
+                                </span>
+                                <?php if ($review['contract_review_date'] !== null): ?>
+                                    <span class="muted">· <?= Formatter::escape(Formatter::date($review['contract_review_date'])) ?></span>
+                                <?php endif; ?>
+                            </li>
+                        <?php endforeach; ?>
+                        </ul>
+                        <?php if (count($contractReviews) > 8): ?>
+                            <p class="muted" style="margin:6px 0 0">+<?= count($contractReviews) - 8 ?> more</p>
+                        <?php endif; ?>
+                    <?php endif; ?>
                 <?php else: ?>
                     <p><strong>HR Notices</strong><br>
                         <?= (int) $notifCount ?> notice(s) awaiting your acknowledgment.<br>
@@ -237,6 +272,8 @@ foreach ($flashMessages as [$ft, $fm]) {
 ?>
 
 <script>
+// Line icons for page scripts (toasts, confirm boxes) - same set as Icon::svg().
+window.WB_ICONS = <?= json_encode(\Wbpms\Http\View\Icon::map(['circle-check', 'circle-x', 'alert', 'info', 'undo', 'user-x', 'user-check', 'archive', 'key', 'help', 'check', 'x'], 18), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>;
 function searchNav(q) {
     q = q.toLowerCase().trim();
     document.querySelectorAll('.sidebar nav a').forEach(function(a) {
@@ -274,11 +311,12 @@ function showToast(type, message) {
     toast.className = 'toast toast-' + type;
     toast.setAttribute('role', 'alert');
 
-    var icon = type === 'success' ? '✓' : (type === 'error' ? '✕' : (type === 'warning' ? '⚠' : 'ℹ'));
+    var tones = { success: 'circle-check', error: 'circle-x', warning: 'alert', info: 'info' };
+    var icon = (window.WB_ICONS || {})[tones[type] || 'info'] || '';
     toast.innerHTML =
         '<span class="toast-icon">' + icon + '</span>' +
         '<span class="toast-msg">' + message.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</span>' +
-        '<button class="toast-close" onclick="this.parentElement.remove()" aria-label="Dismiss">×</button>';
+        '<button class="toast-close" onclick="this.parentElement.remove()" aria-label="Dismiss">' + ((window.WB_ICONS || {}).x || '&times;') + '</button>';
 
     container.appendChild(toast);
 
@@ -326,6 +364,10 @@ function showToast(type, message) {
 })();
 <?php endif; ?>
 </script>
+<!-- On-page confirmation for forms/buttons with data-confirm (replaces window.confirm) -->
+<script src="<?= $base ?>/assets/confirm-dialog.js?v=<?= filemtime(APP_ROOT . '/public/assets/confirm-dialog.js') ?>"></script>
+<!-- Tables (scroll, sort, paginate), auto filters, remembered dates, WBPMS calendar -->
+<script src="<?= $base ?>/assets/ui-enhance.js?v=<?= filemtime(APP_ROOT . '/public/assets/ui-enhance.js') ?>"></script>
 
 <!-- Build version — visible only in page source for non-sidebar views -->
 <meta name="app-version" content="<?= htmlspecialchars(\Wbpms\Http\View\AppVersion::label(), ENT_QUOTES, 'UTF-8') ?>">

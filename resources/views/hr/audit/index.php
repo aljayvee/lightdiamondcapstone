@@ -52,8 +52,11 @@ $rowOffset = ($page - 1) * ($pageSize ?? 50);
  * @param string|null $raw   The description column value (JSON or plain text)
  */
 $fmtDesc = static function (string $eventType, ?string $raw): string {
-    $e  = static fn(?string $v): string => Formatter::escape((string) $v);
-    $t  = static fn(?string $v): string => $v !== null ? substr((string) $v, 0, 5) : '—'; // HH:MM from HH:MM:SS
+    // JSON descriptions can hold numbers (e.g. "amount": 100) or nested
+    // values; under strict_types a ?string parameter would throw a TypeError
+    // and take down the whole Audit Trail page, so accept anything scalar.
+    $e  = static fn(mixed $v): string => Formatter::escape(is_scalar($v) ? (string) $v : '');
+    $t  = static fn(mixed $v): string => is_scalar($v) ? substr((string) $v, 0, 5) : '—'; // HH:MM from HH:MM:SS
     $nil = '<span style="color:#9ca3af">—</span>';
 
     // --- attendance_adjusted -------------------------------------------
@@ -150,7 +153,7 @@ $fmtDesc = static function (string $eventType, ?string $raw): string {
         <h1>Audit Trail</h1>
         <p>Immutable record of all user actions across the system.</p>
     </div>
-    <a href="<?= $base ?>/hr/reports" class="btn btn-secondary">← Back to Reports</a>
+    <a href="<?= $base ?>/hr/reports" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Reports</a>
 </div>
 
 <!-- Filters -->
@@ -279,7 +282,7 @@ $fmtDesc = static function (string $eventType, ?string $raw): string {
                             <?php endif; ?>
                         </td>
                         <td style="font-size:.8rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-                            <?= Formatter::escape((string) ($row['role_name'] ?? '—')) ?>
+                            <?= Formatter::escape(Formatter::label($row['role_name'] ?? null)) ?>
                         </td>
                         <td>
                             <?php

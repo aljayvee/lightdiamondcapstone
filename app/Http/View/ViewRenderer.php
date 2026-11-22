@@ -6,7 +6,9 @@ namespace Wbpms\Http\View;
 
 use Wbpms\Http\Middleware\AuthMiddleware;
 use Wbpms\Http\Middleware\CsrfMiddleware;
+use Wbpms\Domain\Employee\ContractReviewPolicy;
 use Wbpms\Infrastructure\Database\Connection;
+use Wbpms\Infrastructure\Persistence\ContractReviewRepository;
 
 /**
  * ViewRenderer — renders a view file into the shared layout.
@@ -24,6 +26,32 @@ use Wbpms\Infrastructure\Database\Connection;
 final class ViewRenderer
 {
     /**
+     * Status to send for a rendered page: an error status (>= 400) already
+     * set by the caller stands; anything else becomes 200.
+     */
+    public static function responseStatus(int|bool $current): int
+    {
+        return is_int($current) && $current >= 400 && $current <= 599 ? $current : 200;
+    }
+
+    /**
+     * Stand-alone 403 page (same page AuthMiddleware shows for a wrong role).
+     * Use this instead of render('errors/403'), which would wrap the full
+     * page inside the app layout without the viewer's role.
+     */
+    public static function forbidden(): void
+    {
+        http_response_code(403);
+        header('Content-Type: text/html; charset=utf-8');
+
+        $identity = (PHP_SAPI !== 'cli') ? AuthMiddleware::identity() : null;
+        $roleName = (string) ($identity['role_name'] ?? '');
+        $base     = rtrim((string) ($_ENV['APP_BASE_URL'] ?? ''), '/');
+
+        require APP_ROOT . '/resources/views/errors/403.php';
+    }
+
+    /**
      * Render a view file into the layout and emit the full HTML page.
      *
      * @param  string               $view  Relative view path, e.g. 'hr/dashboard'
@@ -32,6 +60,16 @@ final class ViewRenderer
      */
     public static function render(string $view, array $data = [], string $title = 'WBPMS'): void
     {
+        // Error pages (404 ...) render as a card inside the layout, so the
+        // sidebar stays and the user can carry on.
+        if (str_starts_with($view, 'errors/')) {
+            $data['inLayout'] = true;
+        }
+        // Never show raw SQL / PHP error text in a form's error list.
+        if (array_key_exists('errors', $data)) {
+            $data['errors'] = self::sanitizeErrors($data['errors']);
+        }
+
         // Capture the view's output
         $content = self::captureView($view, $data);
 
@@ -40,6 +78,11 @@ final class ViewRenderer
         $roleName = $identity['role_name'] ?? '';
         $userName = $identity['username']  ?? '';
         $notifCount = self::notificationCount($roleName, isset($identity['employee_id']) ? (int) $identity['employee_id'] : null);
+        // HR Head: contract reviews that are due soon, overdue, or missing. [EMP-024]
+        $contractReviews = $roleName === 'HRHead' ? self::contractReviewsDue() : [];
+        if ($roleName === 'HRHead') {
+            $notifCount = count($contractReviews);
+        }
 
         // Active sidebar nav key — forwarded from the view's $data array when
         // provided. If omitted (most controllers), derive it from the request
@@ -129,13 +172,15 @@ final class ViewRenderer
         // CSRF token for the layout's logout form
         $csrf = (PHP_SAPI !== 'cli') ? CsrfMiddleware::token() : '';
 
-        http_response_code(200);
+        // Keep an error status the controller set before rendering (403, 404,
+        // 422); forcing 200 here made every such page report success.
+        http_response_code(self::responseStatus(http_response_code()));
         header('Content-Type: text/html; charset=utf-8');
 
         // Render the layout
         self::captureLayout(
             $title, $content, $roleName, $userName, $csrf,
-            $flash, $flashError, $activePage, $notifCount, $flashMessages
+            $flash, $flashError, $activePage, $notifCount, $flashMessages, $contractReviews
         );
     }
 
@@ -155,8 +200,27 @@ final class ViewRenderer
     public static function flashError(string $message): void
     {
         if (PHP_SAPI !== 'cli' && session_status() === PHP_SESSION_ACTIVE) {
-            $_SESSION['_flash_error'] = $message;
+            $_SESSION['_flash_error'] = UserMessage::sanitize($message);
         }
+    }
+
+    /**
+     * Replace technical text (SQL errors, PHP errors, file paths) in a view's
+     * $errors value with the friendly generic message; keys are kept so
+     * field-level errors still appear beside their field.
+     */
+    public static function sanitizeErrors(mixed $errors): mixed
+    {
+        if (is_string($errors)) {
+            return UserMessage::sanitize($errors);
+        }
+        if (is_array($errors)) {
+            foreach ($errors as $key => $value) {
+                $errors[$key] = self::sanitizeErrors($value);
+            }
+        }
+
+        return $errors;
     }
 
     /**
@@ -165,7 +229,7 @@ final class ViewRenderer
     public static function flashWarning(string $message): void
     {
         if (PHP_SAPI !== 'cli' && session_status() === PHP_SESSION_ACTIVE) {
-            $_SESSION['_flash_warning'] = $message;
+            $_SESSION['_flash_warning'] = UserMessage::sanitize($message);
         }
     }
 
@@ -220,6 +284,7 @@ final class ViewRenderer
      * Output the layout with the captured $content injected.
      *
      * @param list<array{0:string,1:string}> $flashMessages Normalised [type, message] pairs
+     * @param list<array{employee_id:int, name:string, employee_type:string, contract_review_date:string|null}> $contractReviews
      */
     private static function captureLayout(
         string  $title,
@@ -232,6 +297,7 @@ final class ViewRenderer
         string  $activePage = '',
         int     $notifCount = 0,
         array   $flashMessages = [],
+        array   $contractReviews = [],
     ): void {
         $layoutPath = APP_ROOT . '/resources/views/layout.php';
 
@@ -302,6 +368,26 @@ final class ViewRenderer
         }
 
         return '';
+    }
+
+    /**
+     * Contract reviews for the HR Head's bell: Contractual / Probationary
+     * employees whose review date is within ContractReviewPolicy::DUE_SOON_DAYS,
+     * overdue, or not set. [EMP-024]
+     *
+     * @return list<array{employee_id:int, name:string, employee_type:string, contract_review_date:string|null}>
+     */
+    private static function contractReviewsDue(): array
+    {
+        try {
+            $today = new \DateTimeImmutable('today', new \DateTimeZone('Asia/Manila'));
+            $repo  = new ContractReviewRepository(new Connection(require APP_ROOT . '/config/database.php'));
+
+            return $repo->dueOnOrBefore(ContractReviewPolicy::dueCutoff($today));
+        } catch (\Throwable) {
+            // A notification must never prevent the page from rendering.
+            return [];
+        }
     }
 
     /** Return the current in-app alert count appropriate for the signed-in role. */

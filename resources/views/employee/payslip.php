@@ -31,13 +31,13 @@ $data        = $payslip['data'] ?? [];
         </p>
     </div>
     <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
-        <a class="btn btn-secondary" href="<?= $base ?>/employee/payslips">← Back to Payslips</a>
+        <a class="btn btn-secondary" href="<?= $base ?>/employee/payslips"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Payslips</a>
         <?php if ($downloadUrl): ?>
         <a class="btn btn-secondary" href="<?= Formatter::escape($base . '/employee/payslips/' . (int) ($data['payslip_id'] ?? 0) . '/print') ?>" target="_blank">
-            🖨 Print
+            <?= \Wbpms\Http\View\Icon::svg('printer') ?> Print
         </a>
         <a class="btn btn-primary" href="<?= Formatter::escape($downloadUrl) ?>" target="_blank">
-            ⬇ Download PDF
+            <?= \Wbpms\Http\View\Icon::svg('download') ?> Download PDF
         </a>
         <?php endif; ?>
     </div>
@@ -93,8 +93,8 @@ $data        = $payslip['data'] ?? [];
         <table>
             <thead>
                 <tr>
-                    <th>DESCRIPTION</th>
-                    <th style="text-align:right">AMOUNT</th>
+                    <th>Description</th>
+                    <th style="text-align:right">Amount</th>
                 </tr>
             </thead>
             <tbody>
@@ -124,10 +124,10 @@ $data        = $payslip['data'] ?? [];
     <?php if ($downloadUrl): ?>
     <div style="margin-top:1.25rem;display:flex;gap:.75rem;align-items:center;flex-wrap:wrap">
         <a class="btn btn-secondary" href="<?= Formatter::escape($base . '/employee/payslips/' . (int) ($data['payslip_id'] ?? 0) . '/print') ?>" target="_blank">
-            🖨 Print
+            <?= \Wbpms\Http\View\Icon::svg('printer') ?> Print
         </a>
         <a class="btn btn-primary" href="<?= Formatter::escape($downloadUrl) ?>">
-            ⬇ Download PDF
+            <?= \Wbpms\Http\View\Icon::svg('download') ?> Download PDF
         </a>
         <span style="font-size:.8rem;color:#6b7280">Generates a downloadable PDF payslip.</span>
     </div>

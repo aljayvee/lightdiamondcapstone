@@ -23,7 +23,7 @@ $v = static fn(string $key, string $fallback = ''): string =>
     <div>
         <h1>Assign Schedule to Employee</h1>
     </div>
-    <a href="<?= $base ?>/hr/schedules" class="btn btn-secondary">← Back to Work Schedules</a>
+    <a href="<?= $base ?>/hr/schedules" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Work Schedules</a>
 </div>
 
 <div class="card" style="max-width:520px">
@@ -87,7 +87,7 @@ $v = static fn(string $key, string $fallback = ''): string =>
         <!-- Notes (optional) -->
         <div class="form-group">
             <label for="notes">Notes <span class="muted">(optional)</span></label>
-            <input type="text" id="notes" name="notes"
+            <input type="text" id="notes" name="notes" maxlength="255"
                    value="<?= $v('notes') ?>"
                    placeholder="e.g. Transferred to night shift">
         </div>

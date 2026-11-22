@@ -156,6 +156,15 @@ final class DatabaseSessionHandler implements \SessionHandlerInterface
     }
 
     /**
+     * Delete all sessions for the given user (used on account deactivation or archiving).
+     */
+    public function invalidateAllByUserId(int $userId): void
+    {
+        $stmt = $this->pdo->prepare('DELETE FROM sessions WHERE user_id = :user_id');
+        $stmt->execute([':user_id' => $userId]);
+    }
+
+    /**
      * Extract the user_id from a serialized PHP session payload.
      *
      * PHP serializes session data in its own format (not standard PHP

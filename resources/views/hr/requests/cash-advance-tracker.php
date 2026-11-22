@@ -19,7 +19,8 @@ $rows             ??= [];
 $totalOutstanding ??= 0.0;
 $showAll          ??= false;
 
-$role        = $_SESSION['role'] ?? 'HRHead';
+// The session stores the role inside the auth identity, not $_SESSION['role'].
+$role        = (string) (\Wbpms\Http\Middleware\AuthMiddleware::identity()['role_name'] ?? 'HRHead');
 $backLink    = $role === 'BusinessOwner' ? $base . '/owner/requests' : $base . '/hr/requests';
 $trackerBase = $role === 'BusinessOwner'
     ? $base . '/owner/requests/cash-advance-tracker'
@@ -31,7 +32,7 @@ $trackerBase = $role === 'BusinessOwner'
         <h1>Cash Advance Balances</h1>
         <p>Employee cash advance obligations and repayment progress.</p>
     </div>
-    <a href="<?= $backLink ?>" class="btn btn-secondary">← Back to Requests</a>
+    <a href="<?= $backLink ?>" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Requests</a>
 </div>
 
 <!-- Summary cards -->

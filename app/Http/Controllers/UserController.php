@@ -9,7 +9,9 @@ use Wbpms\Application\UserService;
 use Wbpms\Http\Middleware\AuthMiddleware;
 use Wbpms\Http\Middleware\CsrfMiddleware;
 use Wbpms\Http\View\ViewRenderer;
+use Wbpms\Http\View\UserMessage;
 use Wbpms\Infrastructure\Database\Connection;
+use Wbpms\Infrastructure\Logging\ErrorLog;
 
 /**
  * UserController — HTTP layer for User Management (Module 3).
@@ -162,6 +164,11 @@ final class UserController
     public function create(array $params = []): void
     {
         [$service, $identity] = $this->setup();
+        if (($identity['role_name'] ?? '') !== 'BusinessOwner') {
+            ViewRenderer::flashError('Only the Business Owner may create standalone user accounts.');
+            $this->redirect('/users');
+            return;
+        }
 
         $roles     = $service->roles();
         $employees = $service->unlinkedEmployees();
@@ -186,15 +193,37 @@ final class UserController
     public function store(array $params = []): void
     {
         [$service, $identity] = $this->setup();
+        if (($identity['role_name'] ?? '') !== 'BusinessOwner') {
+            ViewRenderer::flashError('Only the Business Owner may create standalone user accounts.');
+            $this->redirect('/users');
+            return;
+        }
 
         try {
-            $service->create($_POST, (int) $identity['user_id']);
-            ViewRenderer::flash('User account created successfully.');
+            $newUserId = $service->create($_POST, (int) $identity['user_id']);
+            $user = $service->findOrFail($newUserId);
+            $rawToken = $service->issueEmailVerificationToken($newUserId);
+            $baseUrl = rtrim((string) ($_ENV['APP_BASE_URL'] ?? ''), '/');
+            if ($baseUrl === '' && isset($_SERVER['HTTP_HOST'])) {
+                $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+                $baseUrl = $scheme . '://' . $_SERVER['HTTP_HOST'];
+            }
+            $verifyLink = $baseUrl . '/verify-email?token=' . urlencode($rawToken);
+            try {
+                (new \Wbpms\Infrastructure\Mail\Mailer())->send(
+                    (string) $user['account_email'],
+                    'Verify your WBPMS email address',
+                    "Hello {$user['username']},\n\nPlease verify your WBPMS account email address by opening the link below:\n\n{$verifyLink}\n\nThis link expires in 24 hours.\n"
+                );
+                ViewRenderer::flash('User account created successfully. A verification link has been sent to ' . (string) $user['account_email'] . '.');
+            } catch (\Throwable) {
+                ViewRenderer::flash('User account created. Verification email could not be delivered via SMTP; use Resend Verification on the user row once mail is configured.');
+            }
             $this->redirect('/users');
         } catch (RuntimeException $e) {
             $roles     = $service->roles();
             $employees = $service->unlinkedEmployees();
-            $errors    = [$e->getMessage()];
+            $errors    = [UserMessage::from($e)];
             $old       = $_POST;
 
             http_response_code(422);
@@ -306,7 +335,7 @@ final class UserController
 
             $roles     = $service->roles();
             $employees = $service->unlinkedEmployees();
-            $errors    = [$e->getMessage()];
+            $errors    = [UserMessage::from($e)];
             $old       = array_merge($user, $_POST);
 
             http_response_code(422);
@@ -330,6 +359,11 @@ final class UserController
     public function toggle(array $params = []): void
     {
         [$service, $identity] = $this->setup();
+        if (($identity['role_name'] ?? '') !== 'BusinessOwner') {
+            ViewRenderer::flashError('Only the Business Owner may activate or deactivate user accounts.');
+            $this->redirect('/users');
+            return;
+        }
         $userId = (int) ($params['id'] ?? 0);
 
         try {
@@ -337,7 +371,7 @@ final class UserController
             $label     = $newStatus === 'Active' ? 'activated' : 'deactivated';
             ViewRenderer::flash("User {$label} successfully.");
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/users');
@@ -351,13 +385,18 @@ final class UserController
     public function archive(array $params = []): void
     {
         [$service, $identity] = $this->setup();
+        if (($identity['role_name'] ?? '') !== 'BusinessOwner') {
+            ViewRenderer::flashError('Only the Business Owner may archive user accounts.');
+            $this->redirect('/users');
+            return;
+        }
         $userId = (int) ($params['id'] ?? 0);
 
         try {
             $service->archive($userId, (int) $identity['user_id']);
             ViewRenderer::flash('User archived successfully.');
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/users');
@@ -371,13 +410,51 @@ final class UserController
     public function unarchive(array $params = []): void
     {
         [$service, $identity] = $this->setup();
+        if (($identity['role_name'] ?? '') !== 'BusinessOwner') {
+            ViewRenderer::flashError('Only the Business Owner may unarchive user accounts.');
+            $this->redirect('/users');
+            return;
+        }
         $userId = (int) ($params['id'] ?? 0);
 
         try {
             $service->unarchive($userId, (int) $identity['user_id']);
             ViewRenderer::flash('User unarchived. Account is now Inactive — activate it to restore access.');
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
+        }
+
+        $this->redirect('/users');
+    }
+
+    // -----------------------------------------------------------------------
+    // POST /users/{id}/resend-verification
+    // -----------------------------------------------------------------------
+
+    /** @param array<string,string> $params */
+    public function resendVerification(array $params = []): void
+    {
+        [$service, $identity] = $this->setup();
+        $userId = (int) ($params['id'] ?? 0);
+
+        try {
+            $user = $service->findOrFail($userId);
+            $rawToken = $service->issueEmailVerificationToken($userId);
+            $baseUrl = rtrim((string) ($_ENV['APP_BASE_URL'] ?? ''), '/');
+            if ($baseUrl === '' && isset($_SERVER['HTTP_HOST'])) {
+                $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+                $baseUrl = $scheme . '://' . $_SERVER['HTTP_HOST'];
+            }
+            $verifyLink = $baseUrl . '/verify-email?token=' . urlencode($rawToken);
+            (new \Wbpms\Infrastructure\Mail\Mailer())->send(
+                (string) $user['account_email'],
+                'Verify your WBPMS email address',
+                "Hello {$user['username']},\n\nPlease verify your WBPMS account email address by opening the link below:\n\n{$verifyLink}\n\nThis link expires in 24 hours.\n"
+            );
+            ViewRenderer::flash('Email verification link sent to ' . (string) $user['account_email'] . '.');
+        } catch (\Throwable $e) {
+            ErrorLog::exception($e, 'resend verification email');
+            ViewRenderer::flashError(UserMessage::prefixed('Could not send verification email', $e));
         }
 
         $this->redirect('/users');
@@ -421,6 +498,6 @@ final class UserController
     private function notFound(): void
     {
         http_response_code(404);
-        ViewRenderer::render('errors/404', [], '404 Not Found');
+        ViewRenderer::render('errors/404', [], 'Not found');
     }
 }

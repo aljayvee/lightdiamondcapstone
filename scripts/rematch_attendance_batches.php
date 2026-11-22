@@ -51,7 +51,7 @@ try {
            JOIN employee_biometric_enrollment ebe
              ON ebe.device_id = bp.device_id
             AND ebe.device_employee_code = bp.device_employee_code
-            AND ebe.status = 'Active'
+            AND (ebe.status = 'Active' OR ebe.effective_to IS NOT NULL)
             AND ebe.effective_from <= DATE(bp.source_local_at)
             AND (ebe.effective_to IS NULL OR ebe.effective_to > DATE(bp.source_local_at))
            JOIN payroll p ON p.employee_id = ebe.employee_id

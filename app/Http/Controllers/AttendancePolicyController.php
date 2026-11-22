@@ -10,6 +10,7 @@ use RuntimeException;
 use Wbpms\Application\AttendancePolicyService;
 use Wbpms\Http\Middleware\AuthMiddleware;
 use Wbpms\Http\View\ViewRenderer;
+use Wbpms\Http\View\UserMessage;
 use Wbpms\Infrastructure\Database\Connection;
 
 /**
@@ -77,7 +78,7 @@ final class AttendancePolicyController
             $created = $this->makeService()->evaluateAll($from, $to);
             ViewRenderer::flash("Attendance policy evaluation complete. {$created} new flag(s) created for HR review.");
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/hr/attendance/policy/flags');
@@ -107,7 +108,7 @@ final class AttendancePolicyController
             ]);
             ViewRenderer::flash('Policy flag reviewed.');
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/hr/attendance/policy/flags');

@@ -42,7 +42,7 @@ $timeValue = static function (string $key) use ($schedule): string {
     <div>
         <h1>Edit Schedule</h1>
     </div>
-    <a href="<?= $base ?>/hr/schedules" class="btn btn-secondary">← Back to Work Schedules</a>
+    <a href="<?= $base ?>/hr/schedules" class="btn btn-secondary"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Work Schedules</a>
 </div>
 
 <div class="card" style="max-width:640px">
@@ -170,7 +170,7 @@ $timeValue = static function (string $key) use ($schedule): string {
         <!-- Notes -->
         <div class="form-group">
             <label for="notes">Notes / Description <span class="muted">(optional)</span></label>
-            <textarea id="notes" name="notes" rows="2"
+            <textarea id="notes" name="notes" rows="2" maxlength="1000"
                       style="width:100%;resize:vertical"><?= $v('notes') ?></textarea>
         </div>
 

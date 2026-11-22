@@ -19,6 +19,7 @@ use Wbpms\Infrastructure\Database\Connection;
  *   _auth.role_name                string  (BusinessOwner | HRHead | Employee)
  *   _auth.employee_id              int|null
  *   _auth.requires_password_change bool    (true for auto-provisioned accounts on first login)
+ *   _auth.requires_email_otp       bool    (true until the first-login email OTP is entered)
  *   _auth.logged_in_at             int    Unix timestamp (for absolute expiry check)
  *   _auth.last_active              int    Unix timestamp (for idle expiry check)
  *
@@ -61,7 +62,7 @@ final class AuthMiddleware
      *
      * Regenerates the session ID to prevent fixation attacks.
      *
-     * @param array{user_id: int, username: string, role_name: string, employee_id: int|null, requires_password_change: bool} $identity
+     * @param array{user_id: int, username: string, role_name: string, employee_id: int|null, requires_password_change: bool, requires_email_otp?: bool} $identity
      */
     public static function setIdentity(array $identity): void
     {
@@ -74,6 +75,7 @@ final class AuthMiddleware
             'role_name'                => $identity['role_name'],
             'employee_id'              => $identity['employee_id'],
             'requires_password_change' => (bool) ($identity['requires_password_change'] ?? false),
+            'requires_email_otp'       => (bool) ($identity['requires_email_otp'] ?? false),
             'logged_in_at'             => $now,
             'last_active'              => $now,
         ];
@@ -84,7 +86,7 @@ final class AuthMiddleware
      *
      * Updates last_active on every call for idle-expiry tracking.
      *
-     * @return array{user_id: int, username: string, role_name: string, employee_id: int|null, requires_password_change: bool}|null
+     * @return array{user_id: int, username: string, role_name: string, employee_id: int|null, requires_password_change: bool, requires_email_otp: bool}|null
      */
     public static function identity(): ?array
     {
@@ -148,6 +150,7 @@ final class AuthMiddleware
         $_SESSION[self::SESSION_KEY]['role_name'] = $current['role_name'];
         $_SESSION[self::SESSION_KEY]['employee_id'] = $current['employee_id'];
         $_SESSION[self::SESSION_KEY]['requires_password_change'] = $current['requires_password_change'];
+        $_SESSION[self::SESSION_KEY]['requires_email_otp'] = $current['requires_email_otp'];
         $_SESSION[self::SESSION_KEY]['last_active'] = $now;
 
         return [
@@ -156,6 +159,7 @@ final class AuthMiddleware
             'role_name'                => $current['role_name'],
             'employee_id'              => $current['employee_id'],
             'requires_password_change' => $current['requires_password_change'],
+            'requires_email_otp'       => $current['requires_email_otp'],
         ];
     }
 
@@ -223,18 +227,11 @@ final class AuthMiddleware
         // so that a user who bookmarks their dashboard cannot bypass the forced
         // password change by navigating directly to the page.
         if ($identity['requires_password_change']) {
-            $requestPath  = parse_url((string) ($_SERVER['REQUEST_URI'] ?? ''), PHP_URL_PATH) ?? '';
-            $scriptName   = $_SERVER['SCRIPT_NAME'] ?? '';
-            $base         = rtrim(str_replace('\\', '/', dirname($scriptName)), '/');
-            if ($base !== '' && $base !== '/' && str_starts_with($requestPath, $base)) {
-                $requestPath = substr($requestPath, strlen($base));
-            }
-            $allowedPaths = ['/change-password', '/logout'];
-            if (!in_array(rtrim($requestPath, '/') ?: '/', $allowedPaths, true)) {
-                $appBase = rtrim((string) ($_ENV['APP_BASE_URL'] ?? ''), '/');
-                header('Location: ' . $appBase . '/change-password', true, 302);
-                exit;
-            }
+            self::confineTo(['/change-password', '/logout'], '/change-password');
+        } elseif ($identity['requires_email_otp']) {
+            // First-login email OTP: after the temporary password is replaced,
+            // the account email must be verified before any other page opens.
+            self::confineTo(['/verify-otp', '/verify-otp/resend', '/logout'], '/verify-otp');
         }
 
         if (!empty($allowedRoles) && !in_array($identity['role_name'], $allowedRoles, true)) {
@@ -299,6 +296,26 @@ final class AuthMiddleware
                     'samesite' => $params['samesite'] ?? 'Lax',
                 ]
             );
+        }
+    }
+
+    /**
+     * Redirect to $target unless the current request path is one of $allowedPaths.
+     *
+     * @param list<string> $allowedPaths
+     */
+    private static function confineTo(array $allowedPaths, string $target): void
+    {
+        $requestPath = parse_url((string) ($_SERVER['REQUEST_URI'] ?? ''), PHP_URL_PATH) ?? '';
+        $scriptName  = $_SERVER['SCRIPT_NAME'] ?? '';
+        $base        = rtrim(str_replace('\\', '/', dirname($scriptName)), '/');
+        if ($base !== '' && $base !== '/' && str_starts_with($requestPath, $base)) {
+            $requestPath = substr($requestPath, strlen($base));
+        }
+        if (!in_array(rtrim($requestPath, '/') ?: '/', $allowedPaths, true)) {
+            $appBase = rtrim((string) ($_ENV['APP_BASE_URL'] ?? ''), '/');
+            header('Location: ' . $appBase . $target, true, 302);
+            exit;
         }
     }
 

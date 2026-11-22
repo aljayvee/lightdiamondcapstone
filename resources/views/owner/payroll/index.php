@@ -47,7 +47,7 @@ $recentRuns  ??= [];
 <div class="card" style="padding:0;overflow:hidden;margin-bottom:1.75rem">
     <div style="padding:.85rem 1.25rem;border-bottom:1px solid #e5e7eb;background:#fffbeb">
         <strong style="font-size:.95rem;color:#92400e">
-            ⚠ The following payroll runs require your review and approval.
+            <?= \Wbpms\Http\View\Icon::svg('alert') ?> The following payroll runs require your review and approval.
         </strong>
     </div>
     <table class="data-table">
@@ -68,8 +68,8 @@ $recentRuns  ??= [];
             <td><?= Formatter::escape($run['branch_name']) ?></td>
             <td><?= Formatter::escape($run['period_label']) ?></td>
             <td style="text-align:center"><?= (int) $run['employee_count'] ?></td>
-            <td style="text-align:right">₱<?= Formatter::escape($run['gross_total']) ?></td>
-            <td style="text-align:right;font-weight:600">₱<?= Formatter::escape($run['net_total']) ?></td>
+            <td style="text-align:right">₱<?= number_format((float) $run['gross_total'], 2) ?></td>
+            <td style="text-align:right;font-weight:600">₱<?= number_format((float) $run['net_total'], 2) ?></td>
             <td><?= Formatter::date($run['submitted_at']) ?></td>
             <td>
                 <a href="<?= $base ?>/owner/payroll/<?= (int) $run['id'] ?>/review"
@@ -109,7 +109,7 @@ $recentRuns  ??= [];
         <tr>
             <td><?= Formatter::escape($run['branch_name']) ?></td>
             <td><?= Formatter::escape($run['period_label']) ?></td>
-            <td style="text-align:right">₱<?= Formatter::escape($run['net_total']) ?></td>
+            <td style="text-align:right">₱<?= number_format((float) $run['net_total'], 2) ?></td>
             <td><?= $badge ?></td>
             <td><?= Formatter::date($run['actioned_at']) ?></td>
             <td>

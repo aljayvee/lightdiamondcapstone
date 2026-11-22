@@ -13,15 +13,17 @@ use PHPUnit\Framework\TestCase;
 
 final class TimesheetGeneratorTest extends TestCase
 {
-    public function testItCalculatesAndFlagsAMultiPunchDayWithoutDiscardingEvidence(): void
+    public function testLunchOutAndInPunchesMakeACompleteDayWithoutDiscardingEvidence(): void
     {
+        // Owner logic review C7: in, lunch out, lunch in, out is a normal day.
         $tz = new DateTimeZone('Asia/Manila');
         $punches = array_map(static fn (string $time): ParsedPunch => new ParsedPunch(1, '00123', new DateTimeImmutable("2026-08-03 {$time}", $tz), 2, 'E', $time, null, null, null), ['08:10', '12:00', '13:00', '18:15']);
         $attendance = (new TimesheetGenerator())->generate(9, '2026-08-03', $punches, new WorkSchedule(1, '08:00', '17:00'));
         self::assertSame('08:10', $attendance->timeIn?->format('H:i'));
         self::assertSame('18:15', $attendance->timeOut?->format('H:i'));
         self::assertSame(4, count($attendance->punches));
-        self::assertSame(['MULTI_PUNCH_REVIEW'], $attendance->flags);
+        self::assertSame(['LUNCH_PUNCHES'], $attendance->flags);
+        self::assertSame('Complete', $attendance->status());
         self::assertSame(10, $attendance->lateMinutes);
         self::assertSame(65, $attendance->overtimeMinutes);
     }
@@ -96,5 +98,81 @@ final class TimesheetGeneratorTest extends TestCase
         );
 
         self::assertSame(5, $attendance->lateMinutes);
+    }
+
+    public function testMorningDoubleTapIsFlaggedIncompleteWithRawPunchesPreserved(): void
+    {
+        $tz = new DateTimeZone('Asia/Manila');
+        // Real case from sept 2025_.xls: Tiad, Cris 09/05 Fri = "06:49 06:59".
+        $punches = [
+            new ParsedPunch(1, '24', new DateTimeImmutable('2025-09-05 06:49', $tz), 26, 'I', '06:49 06:59', 'HARDWARE', '24', 'Tiad,Cris'),
+            new ParsedPunch(1, '24', new DateTimeImmutable('2025-09-05 06:59', $tz), 26, 'I', '06:49 06:59', 'HARDWARE', '24', 'Tiad,Cris'),
+        ];
+
+        $attendance = (new TimesheetGenerator())->generate(
+            24,
+            '2025-09-05',
+            $punches,
+            new WorkSchedule(1, '07:00', '16:00', 60, 480, 0, true, '12:00', '13:00'),
+        );
+
+        self::assertTrue($attendance->isIncomplete());
+        self::assertContains('DUPLICATE_TAP', $attendance->flags);
+        self::assertNotContains('TIMEOUT_ONLY', $attendance->flags);
+        self::assertSame('06:49', $attendance->timeIn?->format('H:i'));
+        self::assertNull($attendance->timeOut);
+        self::assertSame(0, $attendance->workedMinutes);
+        self::assertSame(0, $attendance->lateMinutes);
+        self::assertSame(0, $attendance->undertimeMinutes);
+        self::assertCount(2, $attendance->punches);
+    }
+
+    public function testAfternoonDoubleTapIsFlaggedTimeoutOnlyIncomplete(): void
+    {
+        $tz = new DateTimeZone('Asia/Manila');
+        // Real case from Daily Log - H(20260830_1438)july.xls: Algan, Ryan 07/02 Thu = "16:48 16:49".
+        $punches = [
+            new ParsedPunch(1, '136', new DateTimeImmutable('2026-07-02 16:48', $tz), 25, 'F', '16:48 16:49', 'HARDWARE', '136', 'Algan, Ryan'),
+            new ParsedPunch(1, '136', new DateTimeImmutable('2026-07-02 16:49', $tz), 25, 'F', '16:48 16:49', 'HARDWARE', '136', 'Algan, Ryan'),
+        ];
+
+        $attendance = (new TimesheetGenerator())->generate(
+            136,
+            '2026-07-02',
+            $punches,
+            new WorkSchedule(1, '07:00', '16:00', 60, 480, 0, true, '12:00', '13:00'),
+        );
+
+        self::assertTrue($attendance->isIncomplete());
+        self::assertContains('DUPLICATE_TAP', $attendance->flags);
+        self::assertContains('TIMEOUT_ONLY', $attendance->flags);
+        self::assertNull($attendance->timeIn);
+        self::assertSame('16:49', $attendance->timeOut?->format('H:i'));
+        self::assertSame(0, $attendance->workedMinutes);
+        self::assertSame(0, $attendance->lateMinutes);
+        self::assertSame(0, $attendance->undertimeMinutes);
+        self::assertCount(2, $attendance->punches);
+    }
+
+    public function testHalfDayWithBreakWindowUsesActualBreakOverlap(): void
+    {
+        $tz = new DateTimeZone('Asia/Manila');
+        $punches = [
+            new ParsedPunch(1, '108', new DateTimeImmutable('2026-06-19 07:06', $tz), 15, 'W', '07:06 11:59', 'HARDWARE', '108', 'Catayoc, Barbie'),
+            new ParsedPunch(1, '108', new DateTimeImmutable('2026-06-19 11:59', $tz), 15, 'W', '07:06 11:59', 'HARDWARE', '108', 'Catayoc, Barbie'),
+        ];
+
+        $attendance = (new TimesheetGenerator())->generate(
+            108,
+            '2026-06-19',
+            $punches,
+            new WorkSchedule(1, '07:00', '16:00', 60, 480, 0, true, '12:00', '13:00'),
+        );
+
+        self::assertFalse($attendance->isIncomplete());
+        self::assertSame(293, $attendance->workedMinutes);
+        self::assertSame(6, $attendance->lateMinutes);
+        self::assertSame(181, $attendance->undertimeMinutes);
+        self::assertSame(0, $attendance->overtimeMinutes);
     }
 }

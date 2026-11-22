@@ -117,7 +117,7 @@ $flagReason = static function (?string $type): string {
                 <p style="white-space:pre-wrap;line-height:1.6;margin:1rem 0 .5rem;font-size:.9rem"><?= Formatter::escape((string) $notice['body']) ?></p>
 
                 <?php if ($acknowledged): ?>
-                    <p style="margin:0;color:#6b7280;font-size:.8rem">✔ Acknowledged <?= Formatter::date((string) $notice['acknowledged_at']) ?>.</p>
+                    <p style="margin:0;color:#6b7280;font-size:.8rem"><?= \Wbpms\Http\View\Icon::svg('circle-check') ?> Acknowledged <?= Formatter::date((string) $notice['acknowledged_at']) ?>.</p>
                 <?php else: ?>
                     <form method="POST" action="<?= $base ?>/employee/notices/<?= (int) $notice['notice_id'] ?>/acknowledge" style="margin-top:.75rem">
                         <input type="hidden" name="_csrf" value="<?= Formatter::escape($csrf) ?>">

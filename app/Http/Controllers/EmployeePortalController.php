@@ -10,6 +10,7 @@ use Wbpms\Application\EmployeePortal\EmployeeScope;
 use Wbpms\Application\RequestService;
 use Wbpms\Http\Middleware\AuthMiddleware;
 use Wbpms\Http\View\ViewRenderer;
+use Wbpms\Http\View\UserMessage;
 use Wbpms\Infrastructure\Database\Connection;
 use Wbpms\Infrastructure\Reports\PdfRenderer;
 
@@ -214,7 +215,7 @@ final class EmployeePortalController
             });
             ViewRenderer::flash('HR notice acknowledged.');
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/employee/notices');
@@ -413,7 +414,7 @@ final class EmployeePortalController
                 'requestTypes'          => $requestTypes,
                 'sickLeaveBalance'      => (int) $balance,
                 'cashAdvanceOutstanding' => $cashAdvanceOutstanding,
-                'errors'                => ['_general' => $e->getMessage()],
+                'errors'                => ['_general' => UserMessage::from($e)],
             ], 'Submit Request');
         }
     }
@@ -431,7 +432,7 @@ final class EmployeePortalController
         // payroll_period uses payroll_period_id as PK
         $stmt = $pdo->prepare(
             "SELECT ps.payslip_id AS id,
-                    CONCAT(pp.period_start, ' – ', pp.period_end) AS period_label,
+                    CONCAT(DATE_FORMAT(pp.period_start, '%m/%d/%y'), ' – ', DATE_FORMAT(pp.period_end, '%m/%d/%y')) AS period_label,
                     b.branch_name,
                     p.gross_pay,
                     p.total_deductions,
@@ -474,7 +475,7 @@ final class EmployeePortalController
             $data    = $service->payslipData($payslipId);
         } catch (\RuntimeException) {
             http_response_code(404);
-            ViewRenderer::render('errors/404', [], '404 Not Found');
+            ViewRenderer::render('errors/404', [], 'Not found');
             return;
         }
 
@@ -482,8 +483,7 @@ final class EmployeePortalController
         try {
             $this->scope->assertOwnRecord($employeeId, $data['employee_id']);
         } catch (\DomainException) {
-            http_response_code(403);
-            ViewRenderer::render('errors/403', [], 'Forbidden');
+            ViewRenderer::forbidden();
             return;
         }
 
@@ -537,8 +537,7 @@ final class EmployeePortalController
         try {
             $this->scope->assertOwnRecord($employeeId, $data['employee_id']);
         } catch (\DomainException) {
-            http_response_code(403);
-            ViewRenderer::render('errors/403', [], 'Forbidden');
+            ViewRenderer::forbidden();
             return;
         }
 
@@ -571,8 +570,7 @@ final class EmployeePortalController
         try {
             $this->scope->assertOwnRecord($employeeId, $data['employee_id']);
         } catch (\DomainException) {
-            http_response_code(403);
-            ViewRenderer::render('errors/403', [], 'Forbidden');
+            ViewRenderer::forbidden();
             return;
         }
 
@@ -649,8 +647,8 @@ final class EmployeePortalController
             $base = rtrim((string)($_ENV['APP_BASE_URL'] ?? ''), '/');
             $pdfUrl = $base . '/employee/payslips/' . (int)($data['payslip_id'] ?? 0) . '/download';
             $html .= '<div class="no-print" style="display:flex;gap:8px;margin-top:8px">';
-            $html .= '<button onclick="window.print()" style="padding:6px 16px;cursor:pointer">🖨 Print</button>';
-            $html .= '<a href="' . $e($pdfUrl) . '" style="padding:6px 16px;background:#1d4ed8;color:#fff;text-decoration:none;border-radius:4px">⬇ Download PDF</a>';
+            $html .= '<button onclick="window.print()" style="padding:6px 16px;cursor:pointer">' . \Wbpms\Http\View\Icon::svg('printer') . ' Print</button>';
+            $html .= '<a href="' . $e($pdfUrl) . '" style="padding:6px 16px;background:#1d4ed8;color:#fff;text-decoration:none;border-radius:4px">' . \Wbpms\Http\View\Icon::svg('download') . ' Download PDF</a>';
             $html .= '</div>';
         }
 
@@ -677,7 +675,7 @@ final class EmployeePortalController
             $service->cancel($requestId, $employeeId);
             ViewRenderer::flash('Request cancelled.');
         } catch (RuntimeException $e) {
-            ViewRenderer::flashError($e->getMessage());
+            ViewRenderer::flashError(UserMessage::from($e));
         }
 
         $this->redirect('/employee/requests');

@@ -4,13 +4,22 @@ declare(strict_types=1);
 
 namespace Wbpms\Http\Controllers;
 
+use Wbpms\Application\AccountPasswordService;
 use Wbpms\Application\AuthService;
+use Wbpms\Application\LoginOtpService;
 use Wbpms\Application\PasswordResetService;
 use Wbpms\Application\UnlinkedEmployeeAccountException;
+use Wbpms\Domain\Auth\LoginOtpCheck;
+use Wbpms\Domain\Auth\LoginOtpPolicy;
+use Wbpms\Domain\Auth\PasswordResetCodeCheck;
+use Wbpms\Domain\Auth\PasswordResetCodePolicy;
 use Wbpms\Http\Middleware\AuthMiddleware;
 use Wbpms\Http\Middleware\CsrfMiddleware;
+use Wbpms\Http\View\ViewRenderer;
 use Wbpms\Infrastructure\Database\Connection;
 use Wbpms\Infrastructure\Mail\Mailer;
+use Wbpms\Infrastructure\Persistence\LoginOtpRepository;
+use Wbpms\Infrastructure\Persistence\PasswordResetRepository;
 use Wbpms\Infrastructure\Session\DatabaseSessionHandler;
 
 /**
@@ -53,6 +62,9 @@ final class AuthController
         $success = $_SESSION['_login_success'] ?? null;
         unset($_SESSION['_login_success']);
 
+        $oldEmail = is_string($_SESSION['_login_email'] ?? null) ? $_SESSION['_login_email'] : '';
+        unset($_SESSION['_login_email']);
+
         $csrfField = CsrfMiddleware::field();
 
         http_response_code(200);
@@ -81,6 +93,8 @@ final class AuthController
 
         $username = trim((string) ($_POST['email'] ?? ''));
         $password = (string) ($_POST['password'] ?? '');
+        // Keep what was typed so a failed attempt does not clear the field (REQ001).
+        $_SESSION['_login_email'] = mb_substr($username, 0, 254);
 
         // Basic input presence check — defer full validation to AuthService
         if ($username === '' || $password === '') {
@@ -108,8 +122,9 @@ final class AuthController
         }
 
         if ($identity === null) {
-            // Generic error — do not reveal whether username or password was wrong
-            $_SESSION['_login_error'] = 'Invalid email or password.';
+            // Surface explicit deactivated / archived / unverified-email message
+            // after valid password verification, or generic message on bad credentials.
+            $_SESSION['_login_error'] = $service->lastFailureMessage() ?? 'Invalid email or password.';
             $this->redirect('/login');
 
             return;
@@ -142,6 +157,12 @@ final class AuthController
         // temporary password before accessing any other module.
         if ($identity['requires_password_change']) {
             $this->redirect('/change-password');
+            return;
+        }
+
+        // First-login email OTP (asked once, until the account email is verified).
+        if ($identity['requires_email_otp']) {
+            $this->redirect('/verify-otp');
             return;
         }
 
@@ -221,22 +242,29 @@ final class AuthController
         $password = (string) ($_POST['password']         ?? '');
         $confirm  = (string) ($_POST['password_confirm'] ?? '');
 
-        if (strlen($password) < 8) {
-            $_SESSION['_change_pwd_error'] = 'Password must be at least 8 characters.';
-            $this->redirect('/change-password');
-            return;
-        }
-
         if ($password !== $confirm) {
             $_SESSION['_change_pwd_error'] = 'Passwords do not match.';
             $this->redirect('/change-password');
             return;
         }
 
-        $connection  = $this->makeConnection();
-        $userService = new \Wbpms\Application\UserService($connection);
+        $connection = $this->makeConnection();
+        $curStmt = $connection->pdo()->prepare('SELECT password_hash FROM users WHERE user_id = :id LIMIT 1');
+        $curStmt->execute([':id' => $identity['user_id']]);
+        $currentHash = $curStmt->fetchColumn();
 
-        // Hash and persist the new password; also clear the flag.
+        $pwdError = \Wbpms\Application\AuthenticationPolicy::validatePasswordStrength(
+            $password,
+            $currentHash !== false ? (string) $currentHash : null,
+        );
+        if ($pwdError !== null) {
+            $_SESSION['_change_pwd_error'] = $pwdError;
+            $this->redirect('/change-password');
+            return;
+        }
+
+        // Hash and persist the new password and clear the flag. The account
+        // email is NOT marked verified here: the first-login OTP does that.
         $hash = password_hash($password, PASSWORD_DEFAULT);
         $connection->pdo()->prepare(
             "UPDATE users
@@ -249,7 +277,154 @@ final class AuthController
         // Remove the flag from the live session so the user can access the app.
         $_SESSION['_auth']['requires_password_change'] = false;
 
+        if ($identity['requires_email_otp']) {
+            $this->redirect('/verify-otp');
+            return;
+        }
+
         $this->redirectToDashboard($identity['role_name']);
+    }
+
+    // -----------------------------------------------------------------------
+    // First-login email OTP
+    // -----------------------------------------------------------------------
+
+    /**
+     * GET /verify-otp — enter the 6-digit code emailed after the first password change.
+     *
+     * Sends a code automatically when there is no usable one yet.
+     *
+     * @param array<string, string> $params
+     */
+    public function showVerifyOtp(array $params = []): void
+    {
+        $this->startSessionIfNeeded();
+        $identity = AuthMiddleware::identity();
+
+        if ($identity === null) {
+            $this->redirect('/login');
+            return;
+        }
+        if ($identity['requires_password_change']) {
+            $this->redirect('/change-password');
+            return;
+        }
+        if (!$identity['requires_email_otp']) {
+            $this->redirectToDashboard($identity['role_name']);
+            return;
+        }
+
+        $service = $this->makeOtpService();
+        $send    = $service->ensureSent(
+            $identity['user_id'],
+            $this->clientIp(),
+            (string) ($_SERVER['HTTP_USER_AGENT'] ?? '')
+        );
+
+        $error   = $_SESSION['_otp_error'] ?? null;
+        $notice  = $_SESSION['_otp_notice'] ?? null;
+        unset($_SESSION['_otp_error'], $_SESSION['_otp_notice']);
+
+        if ($send['status'] === LoginOtpService::SENT && $notice === null) {
+            $notice = 'We sent a 6-digit code to ' . $send['email'] . '.';
+        }
+        if ($send['status'] === LoginOtpService::MAIL_FAILED && $error === null) {
+            $error = 'We could not send the code right now. Please try "Send a new code" in a minute.';
+        }
+
+        $maskedEmail   = $send['email'];
+        $undeliverable = $send['status'] === LoginOtpService::UNDELIVERABLE;
+        $resendWait    = $send['wait'];
+        $csrfField     = CsrfMiddleware::field();
+
+        http_response_code(200);
+        header('Content-Type: text/html; charset=utf-8');
+        require APP_ROOT . '/resources/views/auth/verify-otp.php';
+    }
+
+    /**
+     * POST /verify-otp — check the entered code.
+     *
+     * @param array<string, string> $params
+     */
+    public function verifyOtp(array $params = []): void
+    {
+        $this->startSessionIfNeeded();
+        $identity = AuthMiddleware::identity();
+
+        if ($identity === null) {
+            $this->redirect('/login');
+            return;
+        }
+        if (!$identity['requires_email_otp'] || $identity['requires_password_change']) {
+            $this->redirect($identity['requires_password_change'] ? '/change-password' : '/verify-otp');
+            return;
+        }
+
+        $service = $this->makeOtpService();
+        $result  = $service->verify(
+            $identity['user_id'],
+            (string) ($_POST['code'] ?? ''),
+            $this->clientIp(),
+            (string) ($_SERVER['HTTP_USER_AGENT'] ?? '')
+        );
+
+        if ($result === LoginOtpCheck::Verified) {
+            $_SESSION['_auth']['requires_email_otp'] = false;
+            ViewRenderer::flash($result->message());
+            $this->redirectToDashboard($identity['role_name']);
+            return;
+        }
+
+        $message = $result->message();
+        if ($result === LoginOtpCheck::Wrong) {
+            $left = $service->attemptsLeft($identity['user_id']);
+            $message = $left > 0
+                ? $message . ' ' . $left . ' attempt' . ($left === 1 ? '' : 's') . ' left.'
+                : LoginOtpCheck::TooManyAttempts->message();
+        }
+        $_SESSION['_otp_error'] = $message;
+        $this->redirect('/verify-otp');
+    }
+
+    /**
+     * POST /verify-otp/resend — email a fresh code (once a minute).
+     *
+     * @param array<string, string> $params
+     */
+    public function resendOtp(array $params = []): void
+    {
+        $this->startSessionIfNeeded();
+        $identity = AuthMiddleware::identity();
+
+        if ($identity === null) {
+            $this->redirect('/login');
+            return;
+        }
+        if (!$identity['requires_email_otp'] || $identity['requires_password_change']) {
+            $this->redirect($identity['requires_password_change'] ? '/change-password' : '/verify-otp');
+            return;
+        }
+
+        $send = $this->makeOtpService()->resend(
+            $identity['user_id'],
+            $this->clientIp(),
+            (string) ($_SERVER['HTTP_USER_AGENT'] ?? '')
+        );
+
+        match ($send['status']) {
+            LoginOtpService::SENT        => $_SESSION['_otp_notice'] = 'A new code was sent to ' . $send['email'] . '. Earlier codes no longer work.',
+            LoginOtpService::COOLDOWN    => $_SESSION['_otp_error'] = 'Please wait ' . $send['wait'] . ' seconds before requesting another code.',
+            LoginOtpService::MAIL_FAILED => $_SESSION['_otp_error'] = 'We could not send the code right now. Please try again in a minute.',
+            default                      => null,
+        };
+
+        $this->redirect('/verify-otp');
+    }
+
+    private function makeOtpService(): LoginOtpService
+    {
+        return new LoginOtpService(new LoginOtpRepository($this->makeConnection()), new Mailer());
     }
 
     // -----------------------------------------------------------------------
@@ -273,7 +448,8 @@ final class AuthController
         }
 
         $error     = $_SESSION['_forgot_error'] ?? null;
-        unset($_SESSION['_forgot_error']);
+        $notice    = $_SESSION['_forgot_notice'] ?? null;
+        unset($_SESSION['_forgot_error'], $_SESSION['_forgot_notice']);
 
         $csrfField = CsrfMiddleware::field();
 
@@ -283,14 +459,15 @@ final class AuthController
     }
 
     /**
-     * POST /forgot-password — validate the email and dispatch the reset link.
+     * POST /forgot-password — validate the email and email a reset code.
      *
-     * Always redirects to the "sent" confirmation page regardless of whether
-     * the address exists, to prevent account-existence enumeration.
+     * Always continues to the code-entry page whether or not the address has
+     * an account (prevents account-existence enumeration). Only a mail
+     * delivery failure is reported, as before the code change.
      *
      * @param array<string, string> $params
      */
-    public function sendResetLink(array $params = []): void
+    public function sendResetCode(array $params = []): void
     {
         $this->startSessionIfNeeded();
 
@@ -309,106 +486,85 @@ final class AuthController
             return;
         }
 
-        $connection = $this->makeConnection();
-        $mailer     = new Mailer();
-        $service    = new PasswordResetService($connection, $mailer);
-
-        // Resolve the base URL used inside the password-reset link.
-        //
-        // Priority:
-        //   1. APP_BASE_URL from environment — the canonical value for production.
-        //   2. Derived from the current HTTP request — fallback when APP_BASE_URL
-        //      is missing or still set to a localhost value (common misconfiguration
-        //      when the Railway variable was never updated from the .env default).
-        //
-        // Using a localhost base URL would produce a reset link that only works
-        // on the server itself, not for the end user clicking the email.
-        $baseUrl = rtrim((string) ($_ENV['APP_BASE_URL'] ?? ''), '/');
-
-        $isLocalhost = $baseUrl === ''
-            || str_contains($baseUrl, '://localhost')
-            || str_contains($baseUrl, '://127.0.0.1');
-
-        if ($isLocalhost && isset($_SERVER['HTTP_HOST'])) {
-            $scheme  = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-            $host    = (string) $_SERVER['HTTP_HOST'];
-            $baseUrl = $scheme . '://' . $host;
-        }
-
-        $mailDriver = strtolower(trim((string) ($_ENV['MAIL_DRIVER'] ?? 'log')));
-        $mailHost   = trim((string) ($_ENV['MAIL_HOST'] ?? ''));
-
         // In production, reject immediately if a usable delivery driver is not
         // configured — prevents the user from waiting on a silent no-op.
-        //
-        // Accepted production driver: smtp (Gmail App Password or any SMTP server).
-        // MAIL_HOST must be set and MAIL_DRIVER must be 'smtp'.
-        $appEnv = strtolower(trim((string) ($_ENV['APP_ENV'] ?? 'local')));
-        if ($appEnv === 'production') {
-            $smtpReady = ($mailDriver === 'smtp' && $mailHost !== '');
-
-            if (!$smtpReady) {
-                $_SESSION['_forgot_error'] =
-                    'Password reset emails cannot be sent because the mail server is not '
-                    . 'configured. Please contact your system administrator.';
-                $this->redirect('/forgot-password');
-                return;
-            }
-        }
-
-        try {
-            // initiateReset() returns false only when the address is unknown or
-            // the account is inactive. It re-throws RuntimeException on SMTP failure.
-            $service->initiateReset($email, $baseUrl);
-        } catch (\RuntimeException $e) {
-            // Write the specific SMTP error to mail.log so it is traceable
-            // without exposing details to the end user.
-            $logPath = defined('APP_ROOT')
-                ? APP_ROOT . '/storage/private/mail.log'
-                : sys_get_temp_dir() . '/wbpms-mail.log';
-            $entry = PHP_EOL
-                . str_repeat('-', 72) . PHP_EOL
-                . 'Date:    ' . date('Y-m-d H:i:s') . PHP_EOL
-                . 'Event:   SMTP delivery failed for password reset' . PHP_EOL
-                . 'Error:   ' . $e->getMessage() . PHP_EOL
-                . str_repeat('-', 72) . PHP_EOL;
-            @file_put_contents($logPath, $entry, FILE_APPEND | LOCK_EX);
-
-            $appEnvNow = strtolower(trim((string) ($_ENV['APP_ENV'] ?? 'production')));
-            if ($appEnvNow === 'development') {
-                $_SESSION['_forgot_error'] =
-                    'SMTP delivery failed: ' . $e->getMessage();
-            } else {
-                $_SESSION['_forgot_error'] =
-                    'We could not send the reset email. Please try again in a few minutes '
-                    . 'or contact your system administrator if the problem persists.';
-            }
+        $mailDriver = strtolower(trim((string) ($_ENV['MAIL_DRIVER'] ?? 'log')));
+        $mailHost   = trim((string) ($_ENV['MAIL_HOST'] ?? ''));
+        $appEnv     = strtolower(trim((string) ($_ENV['APP_ENV'] ?? 'local')));
+        if ($appEnv === 'production' && !($mailDriver === 'smtp' && $mailHost !== '')) {
+            $_SESSION['_forgot_error'] =
+                'Password reset emails cannot be sent because the mail server is not '
+                . 'configured. Please contact your system administrator.';
             $this->redirect('/forgot-password');
             return;
         }
 
-        // Always redirect to the sent page (address unknown also lands here
-        // to prevent account-existence enumeration).
-        $this->redirect('/forgot-password/sent');
+        // The same email again within a minute: the code just sent still works.
+        $wait = $this->resetResendWait($email);
+        if ($wait > 0) {
+            $_SESSION['_reset_notice'] = "A code was just sent. You can request another in {$wait} seconds.";
+            $this->redirect('/reset-password');
+            return;
+        }
+
+        $mailError = $this->dispatchResetCode($email);
+        if ($mailError !== null) {
+            $_SESSION['_forgot_error'] = $mailError;
+            $this->redirect('/forgot-password');
+            return;
+        }
+
+        $this->redirect('/reset-password');
     }
 
     /**
-     * GET /forgot-password/sent — confirmation page after submitting the form.
+     * POST /forgot-password/resend — "Send a new code" on the code-entry page.
+     *
+     * @param array<string, string> $params
+     */
+    public function resendResetCode(array $params = []): void
+    {
+        $this->startSessionIfNeeded();
+
+        $email = (string) ($_SESSION['_reset_email'] ?? '');
+        if ($email === '') {
+            $this->redirect('/forgot-password');
+            return;
+        }
+
+        $wait = $this->resetResendWait($email);
+        if ($wait > 0) {
+            $_SESSION['_reset_error'] = "Please wait {$wait} seconds before requesting another code.";
+            $this->redirect('/reset-password');
+            return;
+        }
+
+        $mailError = $this->dispatchResetCode($email);
+        if ($mailError !== null) {
+            $_SESSION['_reset_error'] = $mailError;
+        } else {
+            $_SESSION['_reset_notice'] = 'A new code is on its way. Use only the newest code.';
+        }
+        $this->redirect('/reset-password');
+    }
+
+    /**
+     * GET /forgot-password/sent — old confirmation page; the code page replaced it.
      *
      * @param array<string, string> $params
      */
     public function showResetLinkSent(array $params = []): void
     {
-        http_response_code(200);
-        header('Content-Type: text/html; charset=utf-8');
-        require APP_ROOT . '/resources/views/auth/forgot-password-sent.php';
+        $this->startSessionIfNeeded();
+        $this->redirect(($_SESSION['_reset_email'] ?? '') !== '' ? '/reset-password' : '/forgot-password');
     }
 
     /**
-     * GET /reset-password — render the new-password form.
+     * GET /reset-password — enter the emailed code and the new password.
      *
-     * Validates the token from the query string. Shows an error inside the
-     * form if the token is missing, invalid, or expired.
+     * Needs the email from the Forgot Password form (kept in the session).
+     * Links from reset emails sent before the code change (?token=) are sent
+     * back to Forgot Password with an explanation.
      *
      * @param array<string, string> $params
      */
@@ -416,31 +572,33 @@ final class AuthController
     {
         $this->startSessionIfNeeded();
 
-        $rawToken = (string) ($_GET['token'] ?? '');
-
-        $connection = $this->makeConnection();
-        $mailer     = new Mailer();
-        $service    = new PasswordResetService($connection, $mailer);
-
-        $userId = $rawToken !== '' ? $service->validateToken($rawToken) : null;
-
-        // Show an error inline if the token is bad, but still render the page
-        // so the user gets a clear explanation rather than a blank redirect.
-        $error = null;
-        if ($rawToken === '' || $userId === null) {
-            $error = 'This password reset link is invalid or has expired. '
-                   . 'Please request a new one.';
-            $rawToken = '';   // Don't pass a bad token through the form.
+        if (AuthMiddleware::identity() !== null) {
+            $identity = AuthMiddleware::identity();
+            $this->redirectToDashboard((string) $identity['role_name']);
+            return;
         }
 
-        // Also pick up any error flashed by a previous POST (e.g., passwords didn't match).
-        if ($error === null && isset($_SESSION['_reset_error'])) {
-            $error = $_SESSION['_reset_error'];
+        if (array_key_exists('token', $_GET)) {
+            $_SESSION['_forgot_notice'] =
+                'Password reset links are no longer used. Enter your email address '
+                . 'and we will send you a 6-digit code instead.';
+            $this->redirect('/forgot-password');
+            return;
         }
-        unset($_SESSION['_reset_error']);
 
-        $token      = $rawToken;
-        $csrfField  = CsrfMiddleware::field();
+        $email = (string) ($_SESSION['_reset_email'] ?? '');
+        if ($email === '') {
+            $this->redirect('/forgot-password');
+            return;
+        }
+
+        $maskedEmail = LoginOtpPolicy::maskEmail($email);
+        $resendWait  = $this->resetResendWait($email);
+        $error       = $_SESSION['_reset_error'] ?? null;
+        $notice      = $_SESSION['_reset_notice'] ?? null;
+        unset($_SESSION['_reset_error'], $_SESSION['_reset_notice']);
+
+        $csrfField = CsrfMiddleware::field();
 
         http_response_code(200);
         header('Content-Type: text/html; charset=utf-8');
@@ -448,7 +606,7 @@ final class AuthController
     }
 
     /**
-     * POST /reset-password — consume the token and set the new password.
+     * POST /reset-password — check the code and set the new password.
      *
      * @param array<string, string> $params
      */
@@ -456,44 +614,119 @@ final class AuthController
     {
         $this->startSessionIfNeeded();
 
-        $rawToken = (string) ($_POST['token']            ?? '');
-        $password = (string) ($_POST['password']         ?? '');
-        $confirm  = (string) ($_POST['password_confirm'] ?? '');
-
-        // Validate inputs before touching the database.
-        if ($rawToken === '') {
+        $email = (string) ($_SESSION['_reset_email'] ?? '');
+        if ($email === '') {
+            $_SESSION['_forgot_error'] = 'Your reset request has ended. Please enter your email address again.';
             $this->redirect('/forgot-password');
             return;
         }
 
-        if (strlen($password) < 8) {
-            $_SESSION['_reset_error'] = 'Password must be at least 8 characters.';
-            $this->redirect('/reset-password?token=' . urlencode($rawToken));
+        $code     = (string) ($_POST['code']             ?? '');
+        $password = (string) ($_POST['password']         ?? '');
+        $confirm  = (string) ($_POST['password_confirm'] ?? '');
+
+        // Input problems are reported before the code is checked, so they
+        // never use up one of the code's attempts.
+        if (!LoginOtpPolicy::isWellFormed(LoginOtpPolicy::normalize($code))) {
+            $_SESSION['_reset_error'] = PasswordResetCodeCheck::Malformed->message();
+            $this->redirect('/reset-password');
             return;
         }
 
         if ($password !== $confirm) {
             $_SESSION['_reset_error'] = 'Passwords do not match.';
-            $this->redirect('/reset-password?token=' . urlencode($rawToken));
+            $this->redirect('/reset-password');
             return;
         }
 
-        $connection = $this->makeConnection();
-        $mailer     = new Mailer();
-        $service    = new PasswordResetService($connection, $mailer);
-
-        if (!$service->consumeToken($rawToken, $password)) {
-            // Token invalid or expired — show the reset form with an error.
-            $_SESSION['_reset_error'] =
-                'This password reset link is invalid or has expired. '
-                . 'Please request a new one.';
-            $this->redirect('/reset-password?token=' . urlencode($rawToken));
+        $pwdError = \Wbpms\Application\AuthenticationPolicy::validatePasswordStrength($password);
+        if ($pwdError !== null) {
+            $_SESSION['_reset_error'] = $pwdError;
+            $this->redirect('/reset-password');
             return;
         }
 
-        // Success — redirect to login with a flash message.
-        $_SESSION['_login_success'] =
-            'Your password has been reset. You can now log in with your new password.';
+        $result = $this->makeResetService()->resetPassword(
+            $email,
+            $code,
+            $password,
+            $this->clientIp(),
+            (string) ($_SERVER['HTTP_USER_AGENT'] ?? '')
+        );
+
+        if ($result !== PasswordResetCodeCheck::Verified) {
+            $_SESSION['_reset_error'] = $result->message();
+            $this->redirect('/reset-password');
+            return;
+        }
+
+        unset($_SESSION['_reset_email'], $_SESSION['_reset_sent_at']);
+        $_SESSION['_login_success'] = $result->message();
+        $this->redirect('/login');
+    }
+
+    /** Email a reset code; returns an error message only when delivery failed. */
+    private function dispatchResetCode(string $email): ?string
+    {
+        $result = $this->makeResetService()->sendCode(
+            $email,
+            $this->clientIp(),
+            (string) ($_SERVER['HTTP_USER_AGENT'] ?? '')
+        );
+
+        if ($result['status'] === PasswordResetService::MAIL_FAILED) {
+            return 'We could not send the reset email. Please try again in a few minutes '
+                . 'or contact your system administrator if the problem persists.';
+        }
+
+        // Every other outcome (sent, no account, daily limit, ...) looks the same.
+        $_SESSION['_reset_email']   = $email;
+        $_SESSION['_reset_sent_at'] = time();
+
+        return null;
+    }
+
+    /** Seconds before this browser may ask for another code for $email. */
+    private function resetResendWait(string $email): int
+    {
+        if (($_SESSION['_reset_email'] ?? '') !== $email || !isset($_SESSION['_reset_sent_at'])) {
+            return 0;
+        }
+        $now = new \DateTimeImmutable();
+
+        return PasswordResetCodePolicy::secondsUntilResend(
+            $now->setTimestamp((int) $_SESSION['_reset_sent_at']),
+            $now
+        );
+    }
+
+    private function makeResetService(): PasswordResetService
+    {
+        return new PasswordResetService(new PasswordResetRepository($this->makeConnection()), new Mailer());
+    }
+
+    /**
+     * GET /verify-email — verify a user's email address from a token link.
+     *
+     * @param array<string, string> $params
+     */
+    public function verifyEmail(array $params = []): void
+    {
+        $this->startSessionIfNeeded();
+        $rawToken = trim((string) ($_GET['token'] ?? ''));
+
+        if ($rawToken === '') {
+            $_SESSION['_login_error'] = 'Missing email verification token.';
+            $this->redirect('/login');
+            return;
+        }
+
+        $userService = new \Wbpms\Application\UserService($this->makeConnection());
+        if ($userService->verifyEmailToken($rawToken)) {
+            $_SESSION['_login_success'] = 'Your email address has been verified. You may now sign in.';
+        } else {
+            $_SESSION['_login_error'] = 'This email verification link is invalid or has expired.';
+        }
 
         $this->redirect('/login');
     }
@@ -527,6 +760,52 @@ final class AuthController
         };
 
         $this->redirect($path);
+    }
+
+    // -----------------------------------------------------------------------
+    // Change Password for any signed-in user (REQ002)
+    // -----------------------------------------------------------------------
+
+    /**
+     * GET /account/password
+     *
+     * @param array<string, string> $params
+     */
+    public function showAccountPassword(array $params = []): void
+    {
+        ViewRenderer::render('account/password', ['errors' => []], 'Change Password');
+    }
+
+    /**
+     * POST /account/password
+     *
+     * @param array<string, string> $params
+     */
+    public function updateAccountPassword(array $params = []): void
+    {
+        $identity = AuthMiddleware::identity();
+        if ($identity === null) {
+            $this->redirect('/login');
+        }
+
+        $connection = $this->makeConnection();
+        $errors = (new AccountPasswordService($connection, new PasswordResetRepository($connection)))->change(
+            (int) $identity['user_id'],
+            (string) ($_POST['current_password'] ?? ''),
+            (string) ($_POST['password'] ?? ''),
+            (string) ($_POST['password_confirm'] ?? ''),
+            $this->clientIp(),
+            (string) ($_SERVER['HTTP_USER_AGENT'] ?? '')
+        );
+
+        if ($errors !== []) {
+            http_response_code(422);
+            ViewRenderer::render('account/password', ['errors' => $errors], 'Change Password');
+            return;
+        }
+
+        ViewRenderer::flash('Your password was changed. Use the new password the next time you sign in.');
+        $this->redirect('/account/password');
     }
 
     private function redirect(string $path): void
