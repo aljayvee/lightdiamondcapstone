@@ -22,6 +22,25 @@ Detailed chronological log of modifications, integrations, and fixes performed b
 
 ## Recorded Entries
 
+### 2026-11-22 — Claude Code (Claude Opus 5.5) — Modification: cash advance date + leave credit year
+- **Request**: Owner (via developer): add a date to cash advances so HR can put an advance in the month it belongs to while computing payroll from past-month biometrics; asked whether approving 2025 leave in 2026 causes problems.
+- **Findings**: `cash_advance_request_detail` had no date; `PayrollService::activeCashAdvanceInfo()` took ₱500 from any run while an advance was Active, regardless of the run's period. Every leave balance/debit path used `date('Y')`, so 2025 leave approved in 2026 spent the 2026 credit. The other developer's repo (romarsares `3899e2e`) has both bugs: its `request_date` only feeds a one-per-week limit; payroll ignores it.
+- **Files Touched**: `database/migrations/20261122000036_add_advance_date_to_cash_advance.php` (new), `app/Domain/CashAdvance/CashAdvanceDate.php` (new), `app/Domain/Leave/LeaveDayCounter.php`, `app/Application/RequestService.php`, `app/Application/PayrollService.php`, `app/Http/Controllers/RequestsController.php`, `app/Http/Controllers/EmployeePortalController.php`, `resources/views/hr/requests/form.php`, `resources/views/employee/requests/form.php`, `resources/views/hr/requests/show.php`, `resources/views/owner/requests/show.php`, `resources/views/hr/requests/cash-advance-tracker.php`, `tests/Unit/CashAdvanceDateAndLeaveYearTest.php` (new), `tests/Integration/RequestLifecycleTest.php`, `tests/Integration/XlsPayrollCalculationIntegrationTest.php`, `regression/generate_regression_tests.php` (+ xlsx).
+- **Work Done**:
+  - Migration: `advance_date` DATE added nullable, backfilled from `DATE(request.submitted_at)`, then NOT NULL (only when no NULL left) + index; idempotent.
+  - Cash Advance Date on HR and Employee forms (default today, Manila); required; not before hire date; at most 31 days ahead. Shown on HR/Owner request detail and Cash Advance Balances (new column).
+  - Payroll: only advances with `advance_date <= period_end`, oldest first; balance owed = `remaining_balance` minus CashAdvance deductions already in other Computed/PendingOwnerApproval/Returned runs (by `calculation_details.history_id`), so two open runs cannot take the same last ₱500. Settlement on approval unchanged.
+  - Leave: `LeaveDayCounter::creditYear()`; submit, HR pre-approve, Owner approve and ledger debit use the leave's own year; pending-days count limited to that year; a range crossing years is refused with a split instruction.
+- **Tests & Regression**:
+  - `php -l`: 15/15 pass (PHP 8.2).
+  - PHPUnit Unit: VPS PHP 8.3.6 temp copy (removed): 415 tests, 0 failures, 17 errors (all `could not find driver`), new test 25/25.
+  - PHPUnit Integration: **Not run**: local MySQL refuses `wbpms_user` on `wbpms_test` and `root` (1698). Fixtures updated so cash advances have a detail row with `advance_date`. Migration not executed anywhere yet.
+  - PHPStan L6: 3 errors, all pre-existing.
+  - Stub render of the 6 changed views: 0 notices; browser pane: field shows only for Cash Advance (disabled otherwise), defaults to today, detail page shows 06/05/26, tracker column + footer colspan OK.
+  - Regression: `REQ-023`, `REQ-024`, `PAY-031` added (256).
+- **Deployment (owner OK, 2026-11-22 09:06 CET)**: server copies of the 10 changed files were identical to git HEAD (only this session's hunks deployed). Backup `/root/backups/wbpms/cash_advance_date_leave_year_20261122_090610` (`files.tgz` + `db_tables.sql`: `cash_advance_request_detail`, `cash_advance_history`, `cash_advance_repayment`, `phinxlog`). Staged LF copies, `php -l` 12/12 on PHP 8.3; installed the migration, `phinx migrate -e production` as www-data (036 migrated 0.11s), then installed 11 code files, reloaded php8.3-fpm; md5 12/12. Checks: `/login` `/health` 200, signed-in pages 302; `advance_date` DATE NOT NULL, 3 rows backfilled to 2026-11-22, 0 NULL; 0 5xx. Read-only live smoke (transaction rolled back): active ₱200 advance dated 11/22 → repayment 0.00 for period ends 06/11 and 11/21, 200.00 for 11/26; `findOrFail` returns `advance_date`; per-year pending leave query runs.
+- **Not done**: not committed. Past-year holidays (e.g. 2025) are not seeded; HR must add them before entering old leave or a holiday is charged.
+
 ### 2026-11-22 — Claude Code (Claude Opus 5.5) — Integration (prod data): removed user 6 and import batch 12
 - **Request**: Developer: "In the users table, remove the user_id number 6".
 - **Findings (read-only)**: user 6 = HRHead, Archived, no employee link. FK refs: `attendance_import_batch.uploaded_by` (RESTRICT, NOT NULL) and `approved_by` (SET NULL) on batch 12 (the only batch: June 2026 .xls, 1,442 punches, 0 matched); `audit_logs.user_id` (SET NULL) 16 rows. `biometric_punch.source_user_id` = 46 is the device Enroll ID (varchar), not this user. Developer chose to delete batch 12 too (options offered: reassign to user 2/40, delete batch, keep archived). Nothing references `biometric_punch`; 0 `attendance` rows use batch 12; no file in `storage/private/attendance`.

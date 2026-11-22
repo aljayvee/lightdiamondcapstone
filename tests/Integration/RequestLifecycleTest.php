@@ -174,6 +174,7 @@ final class RequestLifecycleTest extends IntegrationTestCase
             'request_type_id' => $this->cashAdvanceTypeId,
             'reason'          => 'Emergency expense',
             'amount_requested' => '2000.00',
+            'advance_date'     => date('Y-m-d'),
         ]);
 
         $this->service->approve($requestId, $this->hrUserId);

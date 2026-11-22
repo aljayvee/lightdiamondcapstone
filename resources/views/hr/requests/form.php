@@ -33,6 +33,7 @@ $err = static fn(string $key): string => isset($errors[$key])
 
 $selectedEmployee = (string) ($old['employee_id'] ?? '');
 $selectedType     = (string) ($old['request_type_id'] ?? '');
+$todayManila      = (new \DateTimeImmutable('now', new \DateTimeZone('Asia/Manila')))->format('Y-m-d');
 
 // Build a JS map: request_type_id → code ('leave' | 'overtime' | 'cash_advance')
 $codeMap  = ['Leave' => 'leave', 'Overtime' => 'overtime', 'CashAdvance' => 'cash_advance'];
@@ -177,18 +178,34 @@ foreach ($types as $t) {
 
         <!-- ── Cash advance fields ──────────────────────────────────────── -->
         <div id="section-cash-advance" style="display:none">
-            <div style="max-width:280px;margin-bottom:1rem">
-                <label for="amount_requested"
-                       style="display:block;font-weight:500;font-size:.875rem;margin-bottom:.3rem">
-                    Amount Requested (₱)
-                </label>
-                <input type="number" id="amount_requested" name="amount_requested"
-                       value="<?= $o('amount_requested') ?>"
-                       min="1" max="2000" step="0.01"
-                       style="width:100%;padding:.45rem .7rem;border:1px solid <?= isset($errors['amount_requested']) ? '#dc2626' : '#d1d5db' ?>;border-radius:4px;font-size:.9rem">
-                <small style="color:#6b7280;font-size:.78rem">Maximum: ₱2,000.00 per request.</small>
-                <?= $err('amount_requested') ?>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:.75rem;margin-bottom:.5rem">
+                <div>
+                    <label for="advance_date"
+                           style="display:block;font-weight:500;font-size:.875rem;margin-bottom:.3rem">
+                        Cash Advance Date <span style="color:#dc2626">*</span>
+                    </label>
+                    <input type="date" id="advance_date" name="advance_date"
+                           value="<?= $o('advance_date', $todayManila) ?>"
+                           style="width:100%;padding:.45rem .7rem;border:1px solid <?= isset($errors['advance_date']) ? '#dc2626' : '#d1d5db' ?>;border-radius:4px;font-size:.9rem">
+                    <?= $err('advance_date') ?>
+                </div>
+                <div>
+                    <label for="amount_requested"
+                           style="display:block;font-weight:500;font-size:.875rem;margin-bottom:.3rem">
+                        Amount Requested (₱)
+                    </label>
+                    <input type="number" id="amount_requested" name="amount_requested"
+                           value="<?= $o('amount_requested') ?>"
+                           min="1" max="2000" step="0.01"
+                           style="width:100%;padding:.45rem .7rem;border:1px solid <?= isset($errors['amount_requested']) ? '#dc2626' : '#d1d5db' ?>;border-radius:4px;font-size:.9rem">
+                    <small style="color:#6b7280;font-size:.78rem">Maximum: ₱2,000.00 per request.</small>
+                    <?= $err('amount_requested') ?>
+                </div>
             </div>
+            <p style="margin:0 0 1rem;font-size:.8rem;color:#6b7280">
+                The date the cash is given. The ₱500 weekly repayment starts in the payroll week that contains this date,
+                so use the earlier date when recording an advance from a past month. Payroll runs for weeks before it do not deduct it.
+            </p>
         </div>
 
         <!-- ── Reason ───────────────────────────────────────────────────── -->

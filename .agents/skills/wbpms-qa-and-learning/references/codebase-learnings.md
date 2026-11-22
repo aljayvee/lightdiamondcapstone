@@ -183,6 +183,13 @@ Verified lessons learned directly from `c:\xampp\htdocs\wbpms`. Append new entri
 - **Fix**: `PayrollAttendanceSummaryRepository::forRun()` reads days/minutes with Compute's filters (Complete/Approved, non-cancelled uploads, period + `effective_to`-exclusive branch window); both run views show `N days × ₱rate` and `Attendance: N days · Xh YYm worked`, plus a note when days differ. Seeder aligned to Proc. 1006 s.2025, 1189 and 1264 s.2026 (prod rows not changed).
 - **Prevention Rule**: Anything shown next to a computed payroll figure should come from the same filters as Compute, and a mismatch should be shown, not hidden, so HR knows to compute again. Check the year's proclamation (lawphil.net) before seeding holidays; Islamic holidays are proclaimed separately each year.
 
+### L-027: Back-Dated Payroll Needs Dates On Every Obligation; "Current Year" Defaults Break Old Leave
+
+- **Symptom**: Owner computes payroll for past months from old biometric data. A cash advance approved today would be repaid from a June run; sick leave for 2025 approved in 2026 used the 2026 credit.
+- **Root Cause**: `cash_advance_history` had no business date (only `approved_at`), and `activeCashAdvanceInfo()` never compared anything to the run period. `RequestService` used `date('Y')` in `assertLeaveBalance`, `assertPayableRequest` and `debitLeaveLedger`, although `leave_entitlement` is already per year.
+- **Fix**: `cash_advance_request_detail.advance_date` (migration `20261122000036`), payroll filters `advance_date <= period_end` and subtracts repayments in other open runs; leave year = year of the leave dates (`LeaveDayCounter::creditYear`), cross-year ranges refused.
+- **Prevention Rule**: Any deduction or credit that payroll applies must be keyed to a business date compared with the run period, never to "now" or approval time, because runs are computed out of order. When several runs can be open at once, a balance read at compute time must subtract amounts already reserved by the other open runs.
+
 ## 3. Regression Test Suite Module Map (196 Cases)
 
 Source of truth: `regression/generate_regression_tests.php` -> `regression/WBPMS_Regression_Test_Suite.xlsx`.

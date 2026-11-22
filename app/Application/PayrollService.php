@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use DateTimeZone;
 use PDO;
 use RuntimeException;
+use Wbpms\Domain\CashAdvance\CashAdvanceDate;
 use Wbpms\Domain\Payroll\HolidayPayCalculator;
 use Wbpms\Domain\Payroll\HolidayRecord;
 use Wbpms\Domain\Payroll\HolidayType;
@@ -427,7 +428,7 @@ final class PayrollService
      *   5. Government contributions (SSS, PhilHealth, Pag-IBIG).
      *   6. Late deduction = late_minutes × policy.late_rate_per_minute.
      *   7. Undertime deduction = undertime_minutes × (daily_rate / standard_minutes).
-     *   8. Outstanding cash advance deduction.
+     *   8. Outstanding cash advance deduction (advances dated on or before period end).
      *   9. Net = Gross − Total Deductions.
      */
     public function computeRun(int $runId, int $computedByUserId): void
@@ -793,7 +794,7 @@ final class PayrollService
                         0.0,
                         round($grossPay - ($sssEmployee + $philEmployee + $pagEmployee + $lateDed + $undertimeDed + $incomeTax), 2)
                     );
-                    $caInfo       = $this->activeCashAdvanceInfo($pdo, $employeeId);
+                    $caInfo       = $this->activeCashAdvanceInfo($pdo, $employeeId, (string) $periodEnd, $runId);
                     $caHistoryId  = $caInfo['history_id'];
                     $caDed        = round(min($caInfo['repayment'], $availableForCa), 2);
                 }
@@ -1632,28 +1633,82 @@ final class PayrollService
         return round($basis * $r, 2);
     }
 
-    /** @return array{history_id:?int,repayment:float} */
-    private function activeCashAdvanceInfo(PDO $pdo, int $employeeId): array
+    /**
+     * The weekly ₱500 repayment (ADR-0001) this run takes, and from which advance.
+     *
+     * Only advances dated on or before the run's period end are due, so a run
+     * for a past week never takes an advance given later. [PAY-031] Oldest
+     * advance first. The balance left is what is still owed after the
+     * repayments already taken in other payroll runs that are computed but
+     * not yet approved: computing June and November together cannot take the
+     * same last ₱500 twice (approval is what lowers remaining_balance).
+     *
+     * @return array{history_id:?int,repayment:float}
+     */
+    private function activeCashAdvanceInfo(PDO $pdo, int $employeeId, string $periodEnd, int $runId): array
     {
-        // Deduct minimum weekly repayment (₱500) if there is an active cash advance
         $stmt = $pdo->prepare(
-            "SELECT history_id, remaining_balance
-               FROM cash_advance_history
-              WHERE employee_id = :id AND status = 'Active' AND remaining_balance > 0
-              ORDER BY approved_at DESC, history_id DESC
-              LIMIT 1"
+            "SELECT cah.history_id, cah.remaining_balance, card.advance_date
+               FROM cash_advance_history cah
+               JOIN cash_advance_request_detail card ON card.request_id = cah.request_id
+              WHERE cah.employee_id = :id
+                AND cah.status = 'Active'
+                AND cah.remaining_balance > 0
+                AND card.advance_date <= :period_end
+              ORDER BY card.advance_date ASC, cah.history_id ASC"
         );
-        $stmt->execute([':id' => $employeeId]);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        if (!$row) {
+        $stmt->execute([':id' => $employeeId, ':period_end' => $periodEnd]);
+        $advances = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        if ($advances === []) {
             return ['history_id' => null, 'repayment' => 0.0];
         }
-        $balance   = (float) $row['remaining_balance'];
-        $repayment = 500.0; // ₱500/week (ADR-0001)
-        return [
-            'history_id' => (int) $row['history_id'],
-            'repayment'  => min($repayment, $balance),
-        ];
+
+        $pendingByHistory = $this->cashAdvanceRepaymentsInOpenRuns($pdo, $employeeId, $runId);
+        foreach ($advances as $row) {
+            $historyId = (int) $row['history_id'];
+            $owed = round((float) $row['remaining_balance'] - ($pendingByHistory[$historyId] ?? 0.0), 2);
+            if ($owed > 0.0 && CashAdvanceDate::isDueBy((string) $row['advance_date'], $periodEnd)) {
+                return [
+                    'history_id' => $historyId,
+                    'repayment'  => min(500.0, $owed), // ₱500/week (ADR-0001)
+                ];
+            }
+        }
+
+        return ['history_id' => null, 'repayment' => 0.0];
+    }
+
+    /**
+     * Cash advance repayments already taken for this employee in other runs
+     * that are computed but not yet approved (not yet settled).
+     *
+     * @return array<int,float> history_id => amount
+     */
+    private function cashAdvanceRepaymentsInOpenRuns(PDO $pdo, int $employeeId, int $runId): array
+    {
+        $stmt = $pdo->prepare(
+            "SELECT d.amount, d.calculation_details
+               FROM deduction d
+               JOIN payroll p      ON p.payroll_id      = d.payroll_id
+               JOIN payroll_run pr ON pr.payroll_run_id = p.payroll_run_id
+              WHERE p.employee_id = :employee_id
+                AND p.payroll_run_id <> :run_id
+                AND pr.status IN ('Computed', 'PendingOwnerApproval', 'Returned')
+                AND d.deduction_type = 'CashAdvance'
+                AND d.amount > 0"
+        );
+        $stmt->execute([':employee_id' => $employeeId, ':run_id' => $runId]);
+
+        $pending = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $details = json_decode((string) ($row['calculation_details'] ?? ''), true);
+            $historyId = is_array($details) ? (int) ($details['history_id'] ?? 0) : 0;
+            if ($historyId > 0) {
+                $pending[$historyId] = round(($pending[$historyId] ?? 0.0) + (float) $row['amount'], 2);
+            }
+        }
+
+        return $pending;
     }
 
     /**

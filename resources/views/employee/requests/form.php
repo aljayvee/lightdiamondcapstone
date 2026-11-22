@@ -163,17 +163,31 @@ $selectedType = (string) ($_POST['request_type_id'] ?? '');
 
         <!-- ── Cash advance fields ──────────────────────────────────────── -->
         <div id="section-cash-advance" style="display:none">
-            <div class="form-group" style="max-width:280px;margin-bottom:1rem">
-                <label for="amount_requested" style="display:block;font-weight:500;margin-bottom:.3rem">
-                    Amount Requested (₱)
-                </label>
-                <input type="number" id="amount_requested" name="amount_requested"
-                       value="<?= $fp('amount_requested') ?>"
-                       min="1" max="2000" step="0.01"
-                       style="width:100%;padding:.45rem .7rem;border:1px solid <?= isset($errors['amount_requested']) ? '#dc2626' : '#d1d5db' ?>;border-radius:4px;font-size:.9rem">
-                <small style="color:#6b7280;font-size:.78rem">Maximum: ₱2,000.00 per request.</small>
-                <?= $err('amount_requested') ?>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:.75rem;margin-bottom:.5rem">
+                <div class="form-group">
+                    <label for="advance_date" style="display:block;font-weight:500;margin-bottom:.3rem">
+                        Cash Advance Date <span style="color:#dc2626">*</span>
+                    </label>
+                    <input type="date" id="advance_date" name="advance_date"
+                           value="<?= $fp('advance_date', (new \DateTimeImmutable('now', new \DateTimeZone('Asia/Manila')))->format('Y-m-d')) ?>"
+                           style="width:100%;padding:.45rem .7rem;border:1px solid <?= isset($errors['advance_date']) ? '#dc2626' : '#d1d5db' ?>;border-radius:4px;font-size:.9rem">
+                    <?= $err('advance_date') ?>
+                </div>
+                <div class="form-group">
+                    <label for="amount_requested" style="display:block;font-weight:500;margin-bottom:.3rem">
+                        Amount Requested (₱)
+                    </label>
+                    <input type="number" id="amount_requested" name="amount_requested"
+                           value="<?= $fp('amount_requested') ?>"
+                           min="1" max="2000" step="0.01"
+                           style="width:100%;padding:.45rem .7rem;border:1px solid <?= isset($errors['amount_requested']) ? '#dc2626' : '#d1d5db' ?>;border-radius:4px;font-size:.9rem">
+                    <small style="color:#6b7280;font-size:.78rem">Maximum: ₱2,000.00 per request.</small>
+                    <?= $err('amount_requested') ?>
+                </div>
             </div>
+            <p style="margin:0 0 1rem;font-size:.8rem;color:#6b7280">
+                The day you need the cash. The ₱500 weekly repayment starts in the payroll week that contains this date.
+            </p>
         </div>
 
         <!-- Reason -->

@@ -350,7 +350,7 @@ final class EmployeePortalController
      * Field-name bridge (form → RequestService):
      *   leave:         start_date, end_date          (form sends same names after fix)
      *   overtime:      date_from, date_to, start_time, end_time
-     *   cash_advance:  amount_requested
+     *   cash_advance:  amount_requested, advance_date
      *
      * @param array<string, string> $params
      */
@@ -375,6 +375,7 @@ final class EmployeePortalController
             'end_time'         => trim((string) ($_POST['end_time']         ?? '')),
             // Cash advance
             'amount_requested' => trim((string) ($_POST['amount_requested'] ?? '')),
+            'advance_date'     => trim((string) ($_POST['advance_date']     ?? '')),
         ];
 
         try {

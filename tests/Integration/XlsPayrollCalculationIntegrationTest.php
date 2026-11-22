@@ -602,6 +602,7 @@ final class XlsPayrollCalculationIntegrationTest extends IntegrationTestCase
         $this->pdo->exec("INSERT INTO cash_advance_history (employee_id, request_id, original_amount, remaining_balance, status, approved_at, created_at, updated_at) VALUES
             ({$b['empId']}, {$reqCa1}, 1000.00, 1000.00, 'Active', NOW(), NOW(), NOW()),
             ({$emp2}, {$reqCa2}, 1200.00, 1200.00, 'Active', NOW(), NOW(), NOW())");
+        $this->pdo->exec("INSERT INTO cash_advance_request_detail (request_id, amount, advance_date) VALUES ({$reqCa1}, 1000.00, '2020-01-01'), ({$reqCa2}, 1200.00, '2020-01-01')");
 
         $payrollSvc = new PayrollService(new Connection([], $this->pdo));
         $payrollSvc->computeRun($b['runId'], $b['userId']);
@@ -658,6 +659,7 @@ final class XlsPayrollCalculationIntegrationTest extends IntegrationTestCase
             'request_type_id' => $rtId,
             'reason' => 'HR Head emergency cash advance',
             'amount_requested' => '1000.00',
+            'advance_date' => date('Y-m-d'),
         ], $hrUserId);
 
         $reqRow = $reqSvc->findOrFail($reqId);
@@ -686,6 +688,7 @@ final class XlsPayrollCalculationIntegrationTest extends IntegrationTestCase
         $this->pdo->exec("INSERT INTO request (employee_id, request_type_id, status, reason, submitted_at) VALUES ({$b['empId']}, {$rtCa}, 'Approved', 'CA Partial', NOW())");
         $reqCa = (int) $this->pdo->lastInsertId();
         $this->pdo->exec("INSERT INTO cash_advance_history (employee_id, request_id, original_amount, remaining_balance, status, approved_at, created_at, updated_at) VALUES ({$b['empId']}, {$reqCa}, 600.00, 600.00, 'Active', NOW(), NOW(), NOW())");
+        $this->pdo->exec("INSERT INTO cash_advance_request_detail (request_id, amount, advance_date) VALUES ({$reqCa}, 600.00, '2020-01-01')");
 
         $payrollSvc = new PayrollService(new Connection([], $this->pdo));
         $payrollSvc->computeRun($b['runId'], $b['userId']);

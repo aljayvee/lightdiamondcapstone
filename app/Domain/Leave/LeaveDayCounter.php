@@ -62,4 +62,22 @@ final class LeaveDayCounter
     {
         return round($ledgerBalance - max(0.0, $openRequestDays), 2);
     }
+
+    /**
+     * The leave year whose credit a request uses: the year of its own dates,
+     * not the year it is approved in. A March 2025 sick leave approved in
+     * 2026 uses the 2025 credit. Returns null when the range crosses into
+     * another year (each year has its own 4 days, so it must be split).
+     * [REQ-024]
+     */
+    public static function creditYear(string $startDate, string $endDate): ?int
+    {
+        $startYear = (int) substr($startDate, 0, 4);
+        $endYear   = (int) substr($endDate, 0, 4);
+        if ($startYear < 1 || $startYear !== $endYear) {
+            return null;
+        }
+
+        return $startYear;
+    }
 }

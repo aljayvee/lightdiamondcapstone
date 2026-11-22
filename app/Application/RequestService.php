@@ -6,6 +6,7 @@ namespace Wbpms\Application;
 
 use PDO;
 use RuntimeException;
+use Wbpms\Domain\CashAdvance\CashAdvanceDate;
 use Wbpms\Domain\Leave\LeaveDayCounter;
 use Wbpms\Domain\Payroll\ApprovedOvertimeCalculator;
 use Wbpms\Infrastructure\Database\Connection;
@@ -44,6 +45,10 @@ use Wbpms\Infrastructure\Persistence\WorkCalendarRepository;
  *     holidays: the same days payroll pays. Rest days are not charged.
  *   - Leave and overtime cannot be submitted or approved for dates already
  *     covered by an Approved payroll run (it could never be paid).
+ *   - Leave uses the credit of the year its dates fall in, not the year it
+ *     is approved in; a range crossing into another year is refused. [REQ-024]
+ *   - A cash advance carries the date it is given (advance_date); payroll
+ *     repays it only in runs whose period ends on or after it. [REQ-023]
  */
 final class RequestService
 {
@@ -69,7 +74,9 @@ final class RequestService
      * Overtime requests require date_from, date_to (YYYY-MM-DD), start_time, end_time (HH:MM).
      *   date_from / date_to define the range of days; start_time / end_time apply to every
      *   day in that range (same window each day).
-     * Cash advance requests require amount_requested (numeric string > 0).
+     * Cash advance requests require amount_requested (numeric string > 0) and
+     * advance_date (YYYY-MM-DD, the date the cash is given; payroll repays it
+     * from the run whose period contains that date onward).
      *
      * @param array{
      *   request_type_id:   int,
@@ -81,6 +88,7 @@ final class RequestService
      *   start_time?:       string,
      *   end_time?:         string,
      *   amount_requested?: string,
+     *   advance_date?:     string,
      * } $data
      * @throws RuntimeException on validation failure or insufficient leave balance
      */
@@ -114,13 +122,15 @@ final class RequestService
             if ($endDate < $startDate) {
                 throw new RuntimeException('Leave end date must be on or after start date.');
             }
+            $leaveYear = $this->leaveCreditYear($startDate, $endDate);
 
             $leaveDates    = $this->chargeableLeaveDates($employeeId, $startDate, $endDate);
             $leaveDayCount = (float) count($leaveDates);
             $this->assertNotInApprovedPayroll($employeeId, $leaveDates, 'Leave');
 
-            // REQ078: check sick-leave balance, counting other requests still waiting for approval
-            $this->assertLeaveBalance($employeeId, $leaveDayCount);
+            // REQ078: check the credit of the leave's own year, counting that
+            // year's other requests still waiting for approval
+            $this->assertLeaveBalance($employeeId, $leaveDayCount, $leaveYear);
         }
 
         if ($typeName === 'Overtime') {
@@ -157,6 +167,17 @@ final class RequestService
             }
             if ((float) $amount > 2000.00) {
                 throw new RuntimeException('Cash advance amount cannot exceed ₱2,000.00.');
+            }
+
+            // The date the advance is given decides which payroll weeks repay it.
+            $advanceDate = trim($data['advance_date'] ?? '');
+            $dateProblem = CashAdvanceDate::problem(
+                $advanceDate,
+                $this->employeeHireDate($employeeId),
+                new \DateTimeImmutable('now', new \DateTimeZone('Asia/Manila')),
+            );
+            if ($dateProblem !== null) {
+                throw new RuntimeException($dateProblem);
             }
         }
 
@@ -232,12 +253,13 @@ final class RequestService
             if ($typeName === 'CashAdvance') {
                 $pdo->prepare(
                     "INSERT INTO cash_advance_request_detail
-                        (request_id, amount)
+                        (request_id, amount, advance_date)
                      VALUES
-                        (:rid, :amt)"
+                        (:rid, :amt, :advance_date)"
                 )->execute([
-                    ':rid' => $requestId,
-                    ':amt' => $data['amount_requested'],
+                    ':rid'          => $requestId,
+                    ':amt'          => $data['amount_requested'],
+                    ':advance_date' => trim($data['advance_date'] ?? ''),
                 ]);
             }
 
@@ -389,7 +411,8 @@ final class RequestService
                     ord2.end_time     AS overtime_end_time,
                     ord2.requested_minutes,
                     -- Cash advance detail
-                    card.amount       AS amount_requested
+                    card.amount       AS amount_requested,
+                    card.advance_date
                FROM request r
                JOIN employee e      ON e.employee_id      = r.employee_id
                JOIN request_type rt ON rt.request_type_id = r.request_type_id
@@ -501,7 +524,8 @@ final class RequestService
                     (int) $row['employee_id'],
                     $chargeDays,
                     $requestId,
-                    $actingUserId
+                    $actingUserId,
+                    $this->leaveCreditYear((string) $row['start_date'], (string) $row['end_date']),
                 );
             }
             if ($row['type_name'] === 'Overtime') {
@@ -1193,13 +1217,12 @@ final class RequestService
      * REQ078: Block leave submission when sick-leave balance is insufficient.
      *
      * Uses the leave_entitlement + leave_ledger system.
-     * Auto-provisions a 4-day entitlement row for the current year if none exists.
+     * Auto-provisions a 4-day entitlement row for that year if none exists.
      */
-    private function assertLeaveBalance(int $employeeId, float $daysRequested): void
+    private function assertLeaveBalance(int $employeeId, float $daysRequested, int $year): void
     {
-        $year      = (int) date('Y');
         $balance   = $this->leaveBalance($employeeId, $year);
-        $openDays  = $this->openLeaveDays($employeeId);
+        $openDays  = $this->openLeaveDays($employeeId, $year);
         $available = $this->leaveDayCounter->availableCredit($balance, $openDays);
 
         if ($available < $daysRequested) {
@@ -1209,17 +1232,17 @@ final class RequestService
                 ? ' (' . number_format($openDays, 2) . ' day(s) are already in requests waiting for approval)'
                 : '';
             throw new RuntimeException(
-                "Insufficient sick-leave balance. You have {$balFmt} day(s) remaining{$openNote} "
+                "Insufficient sick-leave balance for {$year}. You have {$balFmt} day(s) remaining{$openNote} "
                 . "but requested {$reqFmt} working day(s)."
             );
         }
     }
 
     /**
-     * Sick-leave days in the employee's leave requests that are still waiting
-     * for a decision (not yet debited from the ledger).
+     * Sick-leave days in the employee's leave requests for $year that are
+     * still waiting for a decision (not yet debited from the ledger).
      */
-    private function openLeaveDays(int $employeeId, int $excludeRequestId = 0): float
+    private function openLeaveDays(int $employeeId, int $year, int $excludeRequestId = 0): float
     {
         $stmt = $this->connection->pdo()->prepare(
             "SELECT COALESCE(SUM(lrd.days_requested), 0)
@@ -1229,11 +1252,46 @@ final class RequestService
               WHERE r.employee_id = :employee_id
                 AND rt.type_name = 'Leave'
                 AND r.status IN ('Pending', 'HRApproved', 'Returned')
+                AND lrd.start_date BETWEEN :year_start AND :year_end
                 AND r.request_id <> :exclude_id"
         );
-        $stmt->execute([':employee_id' => $employeeId, ':exclude_id' => $excludeRequestId]);
+        $stmt->execute([
+            ':employee_id' => $employeeId,
+            ':year_start'  => sprintf('%04d-01-01', $year),
+            ':year_end'    => sprintf('%04d-12-31', $year),
+            ':exclude_id'  => $excludeRequestId,
+        ]);
 
         return round((float) $stmt->fetchColumn(), 2);
+    }
+
+    /**
+     * The year whose sick-leave credit a leave range uses (its own dates).
+     *
+     * @throws RuntimeException when the range crosses into another year.
+     */
+    private function leaveCreditYear(string $startDate, string $endDate): int
+    {
+        $year = LeaveDayCounter::creditYear($startDate, $endDate);
+        if ($year === null) {
+            throw new RuntimeException(sprintf(
+                'A sick-leave request cannot cross from %s into %s: each year has its own credit. '
+                . 'File one request up to 12/31 and another from 01/01.',
+                substr($startDate, 0, 4),
+                substr($endDate, 0, 4),
+            ));
+        }
+
+        return $year;
+    }
+
+    private function employeeHireDate(int $employeeId): ?string
+    {
+        $stmt = $this->connection->pdo()->prepare('SELECT hire_date FROM employee WHERE employee_id = :id');
+        $stmt->execute([':id' => $employeeId]);
+        $hire = $stmt->fetchColumn();
+
+        return $hire !== false && $hire !== null ? (string) $hire : null;
     }
 
     /**
@@ -1262,11 +1320,12 @@ final class RequestService
             return 0.0;
         }
 
+        // The credit of the leave's own year, not the year it is approved in.
+        $year  = $this->leaveCreditYear((string) $row['start_date'], (string) $row['end_date']);
         $dates = $this->chargeableLeaveDates($employeeId, (string) $row['start_date'], (string) $row['end_date']);
         $this->assertNotInApprovedPayroll($employeeId, $dates, 'Leave');
         $days = (float) count($dates);
 
-        $year = (int) date('Y');
         if ($lockPdo !== null) {
             $entitlementId = $this->ensureLeaveEntitlement($lockPdo, $employeeId, $year);
             $lockPdo->prepare('SELECT entitlement_id FROM leave_entitlement WHERE entitlement_id = :eid FOR UPDATE')
@@ -1401,17 +1460,18 @@ final class RequestService
     }
 
     /**
-     * Append a Usage ledger entry debiting the sick-leave balance.
-     * Called inside an existing transaction when a Leave request is approved.
+     * Append a Usage ledger entry debiting the sick-leave balance of $year
+     * (the leave's own year). Called inside an existing transaction when a
+     * Leave request is approved.
      */
     private function debitLeaveLedger(
         PDO $pdo,
         int $employeeId,
         float $days,
         int $requestId,
-        int $actingUserId
+        int $actingUserId,
+        int $year,
     ): void {
-        $year          = (int) date('Y');
         $entitlementId = $this->ensureLeaveEntitlement($pdo, $employeeId, $year);
 
         $pdo->prepare(

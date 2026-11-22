@@ -357,6 +357,15 @@ $cases = [
     ['SAL-007','Manage Salary','Effective date','SAL','High','Functional','New salary date: earliest day shown, real dates only, rate ceiling (REQ062/063)','Signed in as HR Head','1. Add Salary Record → choose an employee with a current salary
 2. Edit Salary on an existing record
 3. Enter 2026-02-31 or a daily rate of 2,000,000','Hint shows the earliest date (day after the current salary starts) and earlier days are disabled; Edit defaults to today (or the earliest day), not the current record\'s date; impossible dates and rates above ₱1,000,000.00 are refused with a clear message (MM/DD/YY)','Fixed 2026-11-22 (evaluation remarks)'],
+    ['REQ-023','Request Management','Cash Advance Date','REQ','High','Functional','Cash advance has a date; HR can record an advance from a past month','Signed in as HR Head (also Employee portal); employee hired before the date','1. New Request → Cash Advance: date defaults to today
+2. Enter 06/05/26, ₱1,000 and submit; open the request (HR and Owner) and Cash Advance Balances
+3. Try a date before the hire date, more than 31 days ahead, or empty','Step 2 saved; detail pages and Cash Advance Balances show Cash Advance Date 06/05/26; step 3 refused with "cannot be before the employee\'s hire date (MM/DD/YY)", "cannot be more than 31 days from today" or "Cash advance date is required"','Added 2026-11-22 (owner request: past-month biometric payroll)'],
+    ['PAY-031','Payroll','Cash Advance Repayment','PAY','High','Functional','Repayment follows the cash advance date, not the approval day','Employee with an approved ₱1,000 cash advance dated 11/20/26; open payroll runs for a June week and the week of 11/20','1. Compute the June run
+2. Compute the 11/20 week run
+3. Approve a ₱500 advance dated 06/05/26 (balance ₱500) and compute two open runs after it before approving either','Step 1: no Cash advance repayment line; step 2: ₱500.00 deducted; step 3: only the first computed run takes the ₱500, the second takes ₱0 (no double charge before approval); balance drops only on Owner approval','Added 2026-11-22'],
+    ['REQ-024','Request Management','Leave Year','REQ','High','Functional','Sick leave uses the credit of its own year','Employee with 4.0 credits in 2025 and 4.0 in 2026; 2025 holidays entered in Settings','1. File and fully approve sick leave for 2 working days in 03/2025
+2. Leave Credits: view 2025 and 2026
+3. File leave from 12/30/25 to 01/02/26','2025 balance 4.00 → 2.00, 2026 stays 4.00; balance messages name the year; step 3 refused: "cannot cross from 2025 into 2026 ... File one request up to 12/31 and another from 01/01"','Fixed 2026-11-22 (approved leave always used the current year\'s credit)'],
 ];
 
 /* ----------------------------------------------------------------------

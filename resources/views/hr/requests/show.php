@@ -127,6 +127,11 @@ $statusLabel = $statusLabels[$status] ?? $status;
                 <th style="text-align:left;padding:.4rem 0;color:#6b7280;font-weight:500">Amount</th>
                 <td style="padding:.4rem 0;font-weight:600">₱<?= number_format((float) $request['amount_requested'], 2) ?></td>
             </tr>
+            <tr>
+                <th style="text-align:left;padding:.4rem 0;color:#6b7280;font-weight:500">Cash Advance Date</th>
+                <td style="padding:.4rem 0"><?= Formatter::escape(Formatter::date($request['advance_date'] ?? null)) ?>
+                    <span style="color:#6b7280;font-size:.8rem">(repayment starts in this payroll week)</span></td>
+            </tr>
             <?php endif; ?>
 
             <?php if (!empty($request['review_notes'])): ?>

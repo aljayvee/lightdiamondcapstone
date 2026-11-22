@@ -118,6 +118,7 @@ final class RequestsController
             'start_time'       => trim((string) ($_POST['start_time']       ?? '')),
             'end_time'         => trim((string) ($_POST['end_time']         ?? '')),
             'amount_requested' => trim((string) ($_POST['amount_requested'] ?? '')),
+            'advance_date'     => trim((string) ($_POST['advance_date']     ?? '')),
         ];
 
         if ($employeeId === 0) {
@@ -365,6 +366,7 @@ final class RequestsController
                     cah.remaining_balance,
                     cah.status        AS ca_status,
                     cah.approved_at,
+                    card.advance_date,
                     r.reason          AS request_reason,
                     cah.request_id
                FROM cash_advance_history cah
@@ -373,6 +375,7 @@ final class RequestsController
                       ON eba.employee_id = e.employee_id AND eba.effective_to IS NULL
                LEFT JOIN branch b ON b.branch_id = eba.branch_id
                LEFT JOIN request r ON r.request_id = cah.request_id
+               LEFT JOIN cash_advance_request_detail card ON card.request_id = cah.request_id
               {$where}
               ORDER BY cah.remaining_balance DESC, e.last_name, e.first_name"
         );

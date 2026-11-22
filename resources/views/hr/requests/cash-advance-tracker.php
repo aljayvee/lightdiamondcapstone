@@ -10,7 +10,7 @@ use Wbpms\Http\View\Formatter;
  *   GET /hr/requests/cash-advance-tracker   (HRHead)
  *   GET /owner/requests/cash-advance-tracker (BusinessOwner)
  *
- * @var list<array{cash_advance_id:int,employee_id:int,employee_number:string,employee_name:string,branch_name:string,original_amount:float,remaining_balance:float,ca_status:string,approved_at:string,request_reason:string,request_id:int}> $rows
+ * @var list<array{cash_advance_id:int,employee_id:int,employee_number:string,employee_name:string,branch_name:string,original_amount:float,remaining_balance:float,ca_status:string,advance_date:?string,approved_at:string,request_reason:string,request_id:int}> $rows
  * @var float $totalOutstanding
  * @var bool  $showAll
  */
@@ -82,6 +82,7 @@ $repaid = count(array_filter($rows, static fn(array $r): bool => (float) $r['rem
                 <th style="text-align:right">Remaining</th>
                 <th style="text-align:center">Repayment Progress</th>
                 <th>Status</th>
+                <th>Advance Date</th>
                 <th>Approved</th>
                 <th>Reason</th>
             </tr>
@@ -118,8 +119,11 @@ $repaid = count(array_filter($rows, static fn(array $r): bool => (float) $r['rem
                 <span style="background:#fef3c7;color:#92400e;padding:1px 8px;border-radius:9999px;font-size:.75rem">Open</span>
                 <?php endif; ?>
             </td>
+            <td style="font-size:.8rem;white-space:nowrap">
+                <?= Formatter::escape(Formatter::date($r['advance_date'] ?? null)) ?>
+            </td>
             <td style="font-size:.8rem;color:#6b7280;white-space:nowrap">
-                <?= Formatter::date($r['approved_at'] ?? null) ?>
+                <?= Formatter::escape(Formatter::date($r['approved_at'] ?? null)) ?>
             </td>
             <td style="font-size:.82rem;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
                 <?= Formatter::escape(mb_strimwidth((string) ($r['request_reason'] ?? ''), 0, 60, '…')) ?>
@@ -134,7 +138,7 @@ $repaid = count(array_filter($rows, static fn(array $r): bool => (float) $r['rem
                 <td style="text-align:right;padding:.6rem .75rem;color:#d97706">
                     ₱<?= number_format($totalOutstanding, 2) ?>
                 </td>
-                <td colspan="4"></td>
+                <td colspan="5"></td>
             </tr>
         </tfoot>
         <?php endif; ?>
