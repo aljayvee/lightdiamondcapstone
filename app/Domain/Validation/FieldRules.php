@@ -15,6 +15,18 @@ final class FieldRules
     public const EMAIL_MAX        = 254;
     public const BANK_DIGITS_MIN  = 10;
     public const BANK_DIGITS_MAX  = 16;
+    /**
+     * Light Diamond pays salaries through BDO only; the payroll bank slip
+     * lists only accounts whose bank_name is exactly this value.
+     */
+    public const PAYROLL_BANK     = 'BDO';
+
+    public static function payrollBank(string $value): ?string
+    {
+        return $value === self::PAYROLL_BANK
+            ? null
+            : 'Only ' . self::PAYROLL_BANK . ' accounts are accepted. Light Diamond pays salaries through ' . self::PAYROLL_BANK . '.';
+    }
 
     public static function username(string $value): ?string
     {

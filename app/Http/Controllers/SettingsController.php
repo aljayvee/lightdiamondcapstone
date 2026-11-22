@@ -6,6 +6,7 @@ namespace Wbpms\Http\Controllers;
 
 use RuntimeException;
 use Wbpms\Application\PayrollService;
+use Wbpms\Domain\Validation\DailyRateRule;
 use Wbpms\Http\View\ViewRenderer;
 use Wbpms\Http\View\UserMessage;
 use Wbpms\Infrastructure\Database\Connection;
@@ -77,8 +78,9 @@ final class SettingsController
         $minWageRaw   = trim((string) ($_POST['minimum_daily_wage']   ?? ''));
         $thresholdRaw = trim((string) ($_POST['annual_tax_threshold'] ?? ''));
 
-        if ($minWageRaw === '' || !is_numeric($minWageRaw) || (float) $minWageRaw < 350.00 || (float) $minWageRaw > 5000.00) {
-            ViewRenderer::flashError('Minimum daily wage must be a valid amount between ₱350.00 and ₱5,000.00.');
+        // The floor can never exceed the daily-rate ceiling, or no rate could be saved.
+        if ($minWageRaw === '' || !is_numeric($minWageRaw) || (float) $minWageRaw < 350.00 || (float) $minWageRaw > DailyRateRule::MAX) {
+            ViewRenderer::flashError(sprintf('Minimum daily wage must be a valid amount between ₱350.00 and ₱%s.', number_format(DailyRateRule::MAX, 2)));
             $this->redirect('/hr/settings/positions');
             return;
         }
@@ -383,10 +385,12 @@ final class SettingsController
         }
 
         $defaultRate = null;
-        $minWageFloor = (float) ($this->activePayrollPolicy()['minimum_daily_wage'] ?? 460.00);
+        $minWageFloor = (float) ($this->activePayrollPolicy()['minimum_daily_wage'] ?? DailyRateRule::FALLBACK_MINIMUM);
         if ($rateRaw !== '') {
             if (!is_numeric($rateRaw) || (float) $rateRaw < $minWageFloor) {
                 $errors['default_daily_rate'] = sprintf('Default daily rate must be at least the active minimum wage (₱%s).', number_format($minWageFloor, 2));
+            } elseif ((float) $rateRaw > DailyRateRule::MAX) {
+                $errors['default_daily_rate'] = sprintf('Default daily rate cannot be more than ₱%s.', number_format(DailyRateRule::MAX, 2));
             } else {
                 $defaultRate = round((float) $rateRaw, 2);
             }
@@ -438,7 +442,7 @@ final class SettingsController
             if ($row !== false) {
                 return [
                     'policy_id'            => (int) $row['policy_id'],
-                    'minimum_daily_wage'   => (float) ($row['minimum_daily_wage'] ?? 460.00),
+                    'minimum_daily_wage'   => (float) ($row['minimum_daily_wage'] ?? DailyRateRule::FALLBACK_MINIMUM),
                     'annual_tax_threshold' => (float) ($row['annual_tax_threshold'] ?? 250000.00),
                 ];
             }
@@ -448,7 +452,7 @@ final class SettingsController
 
         return [
             'policy_id'            => 0,
-            'minimum_daily_wage'   => 460.00,
+            'minimum_daily_wage'   => DailyRateRule::FALLBACK_MINIMUM,
             'annual_tax_threshold' => 250000.00,
         ];
     }

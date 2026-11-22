@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 
+use Wbpms\Domain\Validation\DailyRateRule;
 use Wbpms\Http\View\Formatter;
 
 /**
@@ -86,8 +87,10 @@ $v = static fn(string $key, string $fallback = ''): string =>
      TAB: Job Positions
      ========================================================= -->
 <?php if ($tab === 'positions'):
-    $payrollPolicy ??= ['minimum_daily_wage' => 460.00, 'annual_tax_threshold' => 250000.00];
-    $minDailyWage  = (float) ($payrollPolicy['minimum_daily_wage'] ?? 460.00);
+    $payrollPolicy ??= ['minimum_daily_wage' => DailyRateRule::FALLBACK_MINIMUM, 'annual_tax_threshold' => 250000.00];
+    $minDailyWage  = (float) ($payrollPolicy['minimum_daily_wage'] ?? DailyRateRule::FALLBACK_MINIMUM);
+    $maxDailyRate  = Formatter::escape(number_format(DailyRateRule::MAX, 2, '.', ''));
+    $minRateAttr   = Formatter::escape(number_format($minDailyWage, 2, '.', ''));
     $annualTaxThr  = (float) ($payrollPolicy['annual_tax_threshold'] ?? 250000.00);
 ?>
 
@@ -96,14 +99,14 @@ $v = static fn(string $key, string $fallback = ''): string =>
         <input type="hidden" name="_csrf" value="<?= htmlspecialchars($csrf ?? '', ENT_QUOTES, 'UTF-8') ?>">
         <div>
             <strong style="display:block;font-size:.95rem">DOLE Region XII Minimum Wage &amp; BIR TRAIN Threshold</strong>
-            <small class="muted">Enforced across Employee Create/Edit/Rehire, Position default rates, and Salary Management (Wage Order XII-25: ₱460.00; Wage Order XII-26 Tranche 1: ₱476.00).</small>
+            <small class="muted">Enforced across Employee Create/Edit/Rehire, Position default rates, and Salary Management (Wage Order XII-26: ₱476.00 from 11/22/26, ₱501.00 from 01/01/27).</small>
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:.75rem;align-items:flex-end">
             <div>
                 <label for="minimum_daily_wage" style="display:block;font-size:.8rem;font-weight:600;margin-bottom:.2rem">Minimum Daily Wage (₱)</label>
                 <input type="number" id="minimum_daily_wage" name="minimum_daily_wage"
                        value="<?= Formatter::escape(number_format($minDailyWage, 2, '.', '')) ?>"
-                       min="350" max="5000" step="0.01" required style="width:140px">
+                       min="350" max="<?= $maxDailyRate ?>" step="0.01" required style="width:140px">
             </div>
             <div>
                 <label for="annual_tax_threshold" style="display:block;font-size:.8rem;font-weight:600;margin-bottom:.2rem">BIR Annual Tax Exempt (₱)</label>
@@ -213,10 +216,10 @@ $v = static fn(string $key, string $fallback = ''): string =>
             <div class="form-group" style="margin-bottom:.85rem">
                 <label for="add_default_daily_rate">Default Daily Rate (₱)</label>
                 <input type="number" id="add_default_daily_rate" name="default_daily_rate"
-                       value="<?= ($editRow === null) ? $v('default_daily_rate', '476.00') : '476.00' ?>"
-                       min="460" max="999999.99" step="0.01" placeholder="e.g. 476.00">
+                       value="<?= ($editRow === null) ? $v('default_daily_rate', $minRateAttr) : $minRateAttr ?>"
+                       min="<?= $minRateAttr ?>" max="<?= $maxDailyRate ?>" step="0.01" placeholder="e.g. 476.00">
                 <?= ($editRow === null) ? $e('default_daily_rate') : '' ?>
-                <small class="muted">Auto-populated when HR selects this position (min ₱460.00).</small>
+                <small class="muted">Auto-populated when HR selects this position (₱<?= Formatter::escape(number_format($minDailyWage, 2)) ?> to ₱<?= Formatter::escape(number_format(DailyRateRule::MAX, 2)) ?>).</small>
             </div>
             <div class="form-group" style="margin-bottom:.85rem">
                 <label style="display:flex;align-items:center;gap:.45rem;font-weight:500">
@@ -265,7 +268,7 @@ $v = static fn(string $key, string $fallback = ''): string =>
                 <label for="edit_default_daily_rate">Default Daily Rate (₱)</label>
                 <input type="number" id="edit_default_daily_rate" name="default_daily_rate"
                        value="<?= ($editRow !== null) ? $v('default_daily_rate', '') : '' ?>"
-                       min="460" max="999999.99" step="0.01">
+                       min="<?= $minRateAttr ?>" max="<?= $maxDailyRate ?>" step="0.01">
                 <?= ($editRow !== null) ? $e('default_daily_rate') : '' ?>
             </div>
             <div class="form-group" style="margin-bottom:.85rem">

@@ -6,6 +6,7 @@ namespace Wbpms\Application;
 
 use PDO;
 use RuntimeException;
+use Wbpms\Domain\Validation\DailyRateRule;
 use Wbpms\Infrastructure\Database\Connection;
 
 /**
@@ -27,8 +28,8 @@ use Wbpms\Infrastructure\Database\Connection;
  */
 final class SalaryService
 {
-    /** Same ceiling as Add/Edit Employee (EmployeeController::MAX_DAILY_RATE). */
-    public const MAX_DAILY_RATE = 1000000.00;
+    /** Same ceiling as Add/Edit Employee; see DailyRateRule. */
+    public const MAX_DAILY_RATE = DailyRateRule::MAX;
 
     public function __construct(private Connection $connection) {}
 
@@ -361,7 +362,7 @@ final class SalaryService
             throw new RuntimeException('Daily rate must be a positive number.');
         }
         if ((float) $dailyRate > self::MAX_DAILY_RATE) {
-            throw new RuntimeException(sprintf('Daily rate cannot exceed ₱%s.', number_format(self::MAX_DAILY_RATE, 2)));
+            throw new RuntimeException(DailyRateRule::maxMessage());
         }
         if (preg_match('/^\d+(\.\d{1,2})?$/', $dailyRate) !== 1) {
             throw new RuntimeException('Daily rate can have at most 2 decimal places, e.g. 610.50.');

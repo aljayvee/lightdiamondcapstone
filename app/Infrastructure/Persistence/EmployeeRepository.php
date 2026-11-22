@@ -630,7 +630,7 @@ final class EmployeeRepository extends AbstractRepository implements EmployeeSet
             // Fallback when running against minimal schema without minimum_daily_wage
         }
 
-        return 460.00;
+        return \Wbpms\Domain\Validation\DailyRateRule::FALLBACK_MINIMUM;
     }
 
     /** @return array<string,mixed>|null */

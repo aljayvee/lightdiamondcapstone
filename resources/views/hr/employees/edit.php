@@ -34,7 +34,7 @@ $branches ??= [];
 $schedules ??= [];
 $devices  ??= [];
 $positions ??= [];
-$minimumDailyWage ??= 460.00;
+$minimumDailyWage ??= \Wbpms\Domain\Validation\DailyRateRule::FALLBACK_MINIMUM;
 $nextEmployeeNumber ??= '';
 $errors   ??= [];
 $csrf     ??= '';
@@ -452,7 +452,7 @@ $err = static fn(string $key): string => isset($errors[$key])
                     required
                     data-msg-required="Daily rate is required."
                     data-msg-min="Daily rate cannot be below the DOLE Region XII minimum daily wage (₱<?= Formatter::escape(number_format((float) $minimumDailyWage, 2)) ?>)."
-                    data-msg-max="Daily rate cannot exceed ₱<?= Formatter::escape(number_format(\Wbpms\Http\Controllers\EmployeeController::MAX_DAILY_RATE, 2)) ?>."
+                    data-msg-max="<?= Formatter::escape(\Wbpms\Domain\Validation\DailyRateRule::maxMessage()) ?>"
                     class="<?= isset($errors['daily_rate']) ? 'is-invalid' : '' ?>">
                 <small class="muted" id="daily_rate_hint" style="display:none"></small>
                 <small class="muted">Filled in from the position's default rate (set in Settings); change it if this employee's rate is different. DOLE Region XII minimum daily wage: ₱<?= Formatter::escape(number_format((float) $minimumDailyWage, 2)) ?></small>

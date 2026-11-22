@@ -57,15 +57,17 @@ final class QaPayrollSheetRegressionTest extends TestCase
         return $errors;
     }
 
-    // A daily rate of exactly ₱1,000,000.00 is accepted; anything above is rejected.
-    public function testDailyRateAcceptsOneMillionButNotMore(): void
+    // A daily rate of exactly ₱755.00 is accepted; anything above (incl. ₱1,000,000) is rejected.
+    public function testDailyRateAccepts755ButNotMore(): void
     {
-        self::assertArrayNotHasKey('daily_rate', $this->validateEmployee(['daily_rate' => '1000000'] + $this->validEmployee(), false));
-        self::assertArrayNotHasKey('daily_rate', $this->validateEmployee(['daily_rate' => '1000000.00'] + $this->validEmployee(), true));
+        self::assertArrayNotHasKey('daily_rate', $this->validateEmployee(['daily_rate' => '755'] + $this->validEmployee(), false));
+        self::assertArrayNotHasKey('daily_rate', $this->validateEmployee(['daily_rate' => '755.00'] + $this->validEmployee(), true));
 
-        $errors = $this->validateEmployee(['daily_rate' => '1000000.01'] + $this->validEmployee(), false);
-        self::assertArrayHasKey('daily_rate', $errors);
-        self::assertSame('Daily rate cannot exceed ₱1,000,000.00.', $errors['daily_rate']);
+        foreach (['755.01', '1000000'] as $tooHigh) {
+            $errors = $this->validateEmployee(['daily_rate' => $tooHigh] + $this->validEmployee(), false);
+            self::assertArrayHasKey('daily_rate', $errors, $tooHigh);
+            self::assertSame('Daily rate cannot be more than ₱755.00.', $errors['daily_rate']);
+        }
     }
 
     // An under-age birthdate is reported on the birthdate field with the age and cutoff date.

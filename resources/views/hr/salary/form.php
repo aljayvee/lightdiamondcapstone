@@ -8,7 +8,7 @@ use Wbpms\Http\View\Formatter;
 $old              = $old ?? ($salary ?? []);
 $history          = $history ?? [];
 $isEdit           = $salary !== null;
-$minimumDailyWage = (float) ($minimumDailyWage ?? 460.00);
+$minimumDailyWage = (float) ($minimumDailyWage ?? \Wbpms\Domain\Validation\DailyRateRule::FALLBACK_MINIMUM);
 $activeStarts     = $activeStarts ?? [];
 $today            = date('Y-m-d');
 // A new rate must start after the current one (REQ062/063). On Edit the
@@ -70,7 +70,8 @@ $dateValue    = isset($_POST['effective_from'])
                     Daily Rate (₱) <span style="color:#ef4444">*</span>
                 </label>
                 <input type="number" id="daily_rate" name="daily_rate" class="form-control"
-                       step="0.01" min="<?= htmlspecialchars(number_format($minimumDailyWage, 2, '.', '')) ?>" max="1000000" required
+                       step="0.01" min="<?= htmlspecialchars(number_format($minimumDailyWage, 2, '.', '')) ?>" max="<?= htmlspecialchars(number_format(\Wbpms\Domain\Validation\DailyRateRule::MAX, 2, '.', '')) ?>" required
+                       data-msg-max="<?= htmlspecialchars(\Wbpms\Domain\Validation\DailyRateRule::maxMessage()) ?>"
                        value="<?= htmlspecialchars((string)($old['daily_rate'] ?? '')) ?>">
                 <small style="color:#6b7280">DOLE Region XII minimum daily wage floor: ₱<?= htmlspecialchars(number_format($minimumDailyWage, 2)) ?></small>
             </div>

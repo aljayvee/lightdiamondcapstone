@@ -10,6 +10,7 @@ use Wbpms\Application\EmployeeLifecycleService;
 use Wbpms\Application\UserService;
 use Wbpms\Domain\Employee\BankAccountDateRejected;
 use Wbpms\Domain\Employee\ContractReviewPolicy;
+use Wbpms\Domain\Validation\DailyRateRule;
 use Wbpms\Http\Middleware\AuthMiddleware;
 use Wbpms\Http\View\ViewRenderer;
 use Wbpms\Http\View\UserMessage;
@@ -34,8 +35,8 @@ use Wbpms\Infrastructure\Logging\ErrorLog;
  */
 final class EmployeeController
 {
-    /** Highest daily rate HR may enter (inclusive). `salary.daily_rate` is DECIMAL(12,2). */
-    public const MAX_DAILY_RATE = 1000000.00;
+    /** Highest daily rate HR may enter (inclusive); see DailyRateRule. */
+    public const MAX_DAILY_RATE = DailyRateRule::MAX;
 
     /**
      * GET /hr/employees
@@ -1009,13 +1010,10 @@ final class EmployeeController
             $errors['contract_review_date'] = $reviewError;
         }
 
-        $minWage = $repo !== null ? $repo->activeMinimumDailyWage() : 460.00;
-        if ($data['daily_rate'] === '' || (float) $data['daily_rate'] <= 0) {
-            $errors['daily_rate'] = 'Daily rate is required and must be greater than 0.';
-        } elseif ((float) $data['daily_rate'] < $minWage) {
-            $errors['daily_rate'] = sprintf('Daily rate cannot be below the DOLE Region XII minimum daily wage (₱%s).', number_format($minWage, 2));
-        } elseif ((float) $data['daily_rate'] > self::MAX_DAILY_RATE) {
-            $errors['daily_rate'] = sprintf('Daily rate cannot exceed ₱%s.', number_format(self::MAX_DAILY_RATE, 2));
+        $minWage = $repo !== null ? $repo->activeMinimumDailyWage() : DailyRateRule::FALLBACK_MINIMUM;
+        $rateError = DailyRateRule::error((string) $data['daily_rate'], $minWage);
+        if ($rateError !== null) {
+            $errors['daily_rate'] = $rateError;
         }
 
         if (!$isEdit) {
@@ -1082,13 +1080,10 @@ final class EmployeeController
                 $errors['device_id'] = 'The selected biometric device is not assigned to the selected branch on the rehire date.';
             }
         }
-        $minWage = $repo !== null ? $repo->activeMinimumDailyWage() : 460.00;
-        if ((float) $data['daily_rate'] <= 0) {
-            $errors['daily_rate'] = 'Daily rate must be greater than 0.';
-        } elseif ((float) $data['daily_rate'] < $minWage) {
-            $errors['daily_rate'] = sprintf('Daily rate cannot be below the DOLE Region XII minimum daily wage (₱%s).', number_format($minWage, 2));
-        } elseif ((float) $data['daily_rate'] > self::MAX_DAILY_RATE) {
-            $errors['daily_rate'] = sprintf('Daily rate cannot exceed ₱%s.', number_format(self::MAX_DAILY_RATE, 2));
+        $minWage = $repo !== null ? $repo->activeMinimumDailyWage() : DailyRateRule::FALLBACK_MINIMUM;
+        $rateError = DailyRateRule::error((string) $data['daily_rate'], $minWage);
+        if ($rateError !== null) {
+            $errors['daily_rate'] = $rateError;
         }
         $position = (string) ($data['position'] ?? '');
         if ($position === '') {
@@ -1293,7 +1288,7 @@ final class EmployeeController
         }
 
         $data = [
-            'bank_name'      => trim((string) ($_POST['bank_name']      ?? 'BDO')),
+            'bank_name'      => trim((string) ($_POST['bank_name']      ?? \Wbpms\Domain\Validation\FieldRules::PAYROLL_BANK)),
             'account_name'   => trim((string) ($_POST['account_name']   ?? '')),
             'account_number' => trim((string) ($_POST['account_number'] ?? '')),
             'account_type'   => trim((string) ($_POST['account_type']   ?? '')),
@@ -1302,10 +1297,9 @@ final class EmployeeController
 
         $errors = [];
 
-        if ($data['bank_name'] === '') {
-            $errors['bank_name'] = 'Bank name is required.';
-        } elseif (($tooLong = \Wbpms\Domain\Validation\FieldRules::maxLength($data['bank_name'], 100, 'Bank name')) !== null) {
-            $errors['bank_name'] = $tooLong;
+        // BDO only: the payroll bank slip lists BDO accounts only.
+        if (($bankError = \Wbpms\Domain\Validation\FieldRules::payrollBank($data['bank_name'])) !== null) {
+            $errors['bank_name'] = $bankError;
         }
         if ($data['account_name'] === '') {
             $errors['account_name'] = 'Account name is required.';

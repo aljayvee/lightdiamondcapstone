@@ -6,6 +6,7 @@ namespace Wbpms\Http\Controllers;
 
 use RuntimeException;
 use Wbpms\Application\SalaryService;
+use Wbpms\Domain\Validation\DailyRateRule;
 use Wbpms\Http\Middleware\AuthMiddleware;
 use Wbpms\Http\View\ViewRenderer;
 use Wbpms\Http\View\UserMessage;
@@ -80,7 +81,7 @@ final class SalaryController
         ViewRenderer::render('hr/salary/form', [
             'salary'           => null,
             'employees'        => $employees,
-            'minimumDailyWage' => $service->activeMinimumDailyWage(460.00),
+            'minimumDailyWage' => $service->activeMinimumDailyWage(DailyRateRule::FALLBACK_MINIMUM),
             'activeStarts'     => $service->activeStartDates(),
             'errors'           => [],
             'formTitle'        => 'Add Salary Record',
@@ -108,7 +109,7 @@ final class SalaryController
             ViewRenderer::render('hr/salary/form', [
                 'salary'           => null,
                 'employees'        => $employees,
-                'minimumDailyWage' => $service->activeMinimumDailyWage(460.00),
+                'minimumDailyWage' => $service->activeMinimumDailyWage(DailyRateRule::FALLBACK_MINIMUM),
                 'activeStarts'     => $service->activeStartDates(),
                 'errors'           => [UserMessage::from($e)],
                 'formTitle'        => 'Add Salary Record',
@@ -150,7 +151,7 @@ final class SalaryController
             'salary'           => $salary,
             'employees'        => $employees,
             'history'          => $historyRows,
-            'minimumDailyWage' => $service->activeMinimumDailyWage(460.00),
+            'minimumDailyWage' => $service->activeMinimumDailyWage(DailyRateRule::FALLBACK_MINIMUM),
             'activeStarts'     => $service->activeStartDates(),
             'errors'           => [],
             'formTitle'        => 'Update Salary Rate',
@@ -184,7 +185,7 @@ final class SalaryController
             ViewRenderer::render('hr/salary/form', [
                 'salary'           => $salary,
                 'employees'        => $employees,
-                'minimumDailyWage' => $service->activeMinimumDailyWage(460.00),
+                'minimumDailyWage' => $service->activeMinimumDailyWage(DailyRateRule::FALLBACK_MINIMUM),
                 'activeStarts'     => $service->activeStartDates(),
                 'errors'           => [UserMessage::from($e)],
                 'formTitle'        => 'Update Salary Rate',

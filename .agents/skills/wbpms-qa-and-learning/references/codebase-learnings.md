@@ -351,3 +351,15 @@ Source of truth: `regression/generate_regression_tests.php` -> `regression/WBPMS
 - Doc-vs-code: requirements 10.9 says holiday OT "SHALL NOT be inferred by compounding", but `PayrollService` passes approved holiday OT to `computeBundle()`, which pays (day multiplier × hourly) × 1.30. Matches DOLE; needs owner confirmation.
 - Other: EMP-003 is on schedule 7 (Mon–Fri, Sunday rest) against the Sabbath rule; schedules 6 "aaaaa" and 8 "QAT-TEST" are Active; non-holiday Saturday work pays 1.00× (no rest-day premium).
 - Prevention rule: a schedule with `break_minutes > 0` should always have a break window; check `work_schedule` rows, not only code, when auditing minutes.
+
+## 2026-11-22 — A safety ceiling is not a typo guard; wage orders are data (Claude Code)
+- Symptom: Add Employee accepted a Daily Rate of ₱1,000,000.
+- Root cause: `MAX_DAILY_RATE` was 1,000,000 inclusive — chosen to protect DECIMAL columns, so it never caught an extra zero. Position defaults had no server ceiling.
+- Fix: one rule, `Domain/Validation/DailyRateRule` (floor = Settings minimum wage, ceiling ₱10,000), used by Employee Add/Edit/Rehire, Salary Management and position defaults; views read the same constants for `min`/`max`/`data-msg-max`.
+- Prevention rule: DOLE sets only a floor (NCR ₱755 is the highest minimum in 2026, not a maximum). Keep the ceiling a realistic typo guard and change it in `DailyRateRule` only. A new Region XII wage order is a Settings change (`payroll_policy_version.minimum_daily_wage`, edited in place, not versioned), not a code change; the ₱476 in code is only a fallback. Next step: ₱501 on 01/01/27.
+- Update (same day): the adviser set the cap to ₱755 (NCR minimum used as a company cap). The Settings minimum wage is now also limited to ≤ `DailyRateRule::MAX`, so the floor can never exceed the ceiling.
+
+## 2026-11-22 — Bank accounts are BDO only (Claude Code)
+- Symptom: the bank form offered BPI, Metrobank, … and free text, but `PayrollController` BDO slip/disbursement queries use `bank_name = 'BDO'`, so any other bank silently dropped the employee from the slip.
+- Fix/rule: `FieldRules::PAYROLL_BANK` + `payrollBank()`; the form shows a read-only BDO field and the server refuses anything else (exact, case-sensitive). Change the bank there only.
+

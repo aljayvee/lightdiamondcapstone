@@ -12,7 +12,7 @@ use Wbpms\Http\View\Formatter;
 /** @var float $minimumDailyWage */
 /** @var array<string,string> $errors */
 $errors ??= [];
-$minimumDailyWage ??= 460.00;
+$minimumDailyWage ??= \Wbpms\Domain\Validation\DailyRateRule::FALLBACK_MINIMUM;
 $value = static fn(string $key, string $fallback = ''): string => Formatter::escape((string) ($_POST[$key] ?? $fallback));
 $fieldError = static fn(string $key): string => isset($errors[$key])
     ? '<span class="field-error">' . Formatter::escape($errors[$key]) . '</span>' : '';
@@ -94,6 +94,7 @@ $fieldError = static fn(string $key): string => isset($errors[$key])
                        min="<?= Formatter::escape(number_format((float) $minimumDailyWage, 2, '.', '')) ?>"
                        max="<?= Formatter::escape(number_format(\Wbpms\Http\Controllers\EmployeeController::MAX_DAILY_RATE, 2, '.', '')) ?>"
                        step="0.01" required
+                       data-msg-max="<?= Formatter::escape(\Wbpms\Domain\Validation\DailyRateRule::maxMessage()) ?>"
                        value="<?= $value('daily_rate', (string) ($employee['daily_rate'] ?? '')) ?>"
                        class="<?= isset($errors['daily_rate']) ? 'is-invalid' : '' ?>">
                 <small class="muted" id="daily_rate_hint" style="display:none"></small>

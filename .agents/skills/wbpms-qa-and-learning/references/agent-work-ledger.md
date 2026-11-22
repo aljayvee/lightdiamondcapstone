@@ -22,6 +22,41 @@ Detailed chronological log of modifications, integrations, and fixes performed b
 
 ## Recorded Entries
 
+### 2026-11-22 — Claude Code (Claude Opus 5.5) — Modification: daily rate cap ₱755 + BDO-only bank accounts
+- **Request**: Team message (forwarded by the developer): the adviser (Sir Ryan) set the daily-rate cap at ₱755, and LDE uses BDO only, so the bank form should allow BDO only.
+- **Findings (prod, read-only)**: 0 Active salaries above ₱755 (max ₱700); 1 position default above it ("Business Owner" ₱1,000 — Settings refuses to save that position until its default is ≤ ₱755); bank_details holds 4 Active rows, all BDO. `PayrollController` BDO slip/disbursement queries already filter `bank_name = 'BDO'`, so a non-BDO account silently missed the slip.
+- **Files Touched**: `app/Domain/Validation/DailyRateRule.php` (MAX 755, message without "extra zero"), `app/Domain/Validation/FieldRules.php` (`PAYROLL_BANK`, `payrollBank()`), `app/Http/Controllers/EmployeeController.php` (saveBank uses payrollBank), `app/Http/Controllers/SettingsController.php` (minimum wage ≤ MAX; position message), `resources/views/hr/employees/bank.php` (bank list + script removed; read-only BDO field + note), `resources/views/hr/settings/index.php` (min-wage input max), `tests/Unit/DailyRateRuleTest.php`, `tests/Unit/PayrollBankRuleTest.php` (new), `tests/Unit/QaPayrollSheetRegressionTest.php`, regression generator + xlsx.
+- **Note**: DOLE sets no maximum; ₱755 is NCR's 2026 minimum, used here as a company cap by the adviser's decision.
+- **Tests & Regression**:
+  - `php -l`: 10/10 pass (PHP 8.2)
+  - PHPUnit Unit: VPS PHP 8.3 /tmp copy: targeted 24/24 OK; full 427 tests, 0 failures, 17 errors (all `could not find driver`)
+  - PHPUnit Integration: Not run (no reachable `wbpms_test`)
+  - PHPStan L6: 0 errors on 7 app files
+  - Stub render: bank page has no bank list, read-only BDO + note; Settings inputs max 755.00
+  - Regression TC IDs: `EMP-031` (new), `EMP-019`, `EMP-030`, `SAL-007` (updated); 258 cases
+- **Deploy (owner OK, 2026-11-22)**: server copies diffed — every hunk this change; backup `/root/backups/wbpms/daily_rate_755_bdo_20261122_163324/files.tgz` (6 files); LF copies, `php -l` PHP 8.3 OK, `install -o www-data`, `systemctl reload php8.3-fpm`; md5 live = staged 6/6; `/login` `/health` 200, `/hr/employees/1/bank` `/hr/settings/positions` 302 signed out; 0 5xx after deploy. Live read-only CLI smoke: min 476, max 755 (`EmployeeController::MAX_DAILY_RATE` 755); 1000 and 755.01 refused, 755 and 476 OK; BDO OK, BPI refused. No data changed; "Business Owner" default ₱1,000 left for HR. Not committed.
+
+### 2026-11-22 — Claude Code (Claude Opus 5.5) — Integration (prod data): EMP-010 Aug 2025 leave moved to the 2025 credit
+- **Request**: Owner: fix the previous-year leave that was deducted from the current year's credit ("Yes, move it").
+- **Findings (read-only)**: one ledger row on the wrong year: entry 34, request 35, EMP-010, 08/10/25–08/11/25, Usage −2.00 on entitlement 22 (2026). Owner approval at 08:32 CET, deploy of the per-year fix at 09:06 CET (DB `NOW()` is server time CET, not UTC), so the old code charged it. No 2025 entitlement existed.
+- **Action**: mysqldump `leave_entitlement` + `leave_ledger` to `/root/backups/wbpms/emp010_leave_year_move_20261122_091610`. One-off PHP/PDO transaction as www-data: locked and checked entry 34 (entitlement 22, request 35, Usage −2.00, 2026, EMP-010, 2025 dates) else abort; created entitlement 31 (Sick 2025, 4.00) + Grant 4.00 like `ensureLeaveEntitlement`; `UPDATE leave_ledger SET entitlement_id = 31` (+ note) for entry 34 only (rowCount 1); audit row 595 `leave_credit_corrected`; asserted balances before commit. Rehearsal first (rolled back; it used auto-increment 30, so the real row is 31).
+- **Verification**: EMP-010 2026 balance 4.00 (Grant 4.00), 2025 balance 2.00 (Grant 4.00, Usage −2.00); 0 ledger rows whose leave year differs from the credit year; `/login` 200. Script removed from the server. No code change; no regression TC.
+
+### 2026-11-22 — Claude Code (Claude Opus 5.5) — Fix: daily rate ceiling ₱10,000 + Region XII minimum ₱476
+- **Request**: Owner saw Add Employee accept a Daily Rate of ₱1,000,000; asked to set the minimum wage to ₱476 (Wage Order RB XII-26, first tranche, effective 11/22/26; ₱501 from 01/01/27) and add a realistic cap.
+- **Findings**: `MAX_DAILY_RATE = 1000000.00` (inclusive, `>` check) in `EmployeeController` and `SalaryService`, set 11-21 only as a column-overflow guard. Position default rate had no ceiling at all (`max="999999.99"`). The minimum wage lives in `payroll_policy_version.minimum_daily_wage` (edited in place from Settings → Positions); code holds ₱460 only as fallbacks. Prod (read-only check): policy #1 still ₱460; 17 Active salaries ₱460–₱700, 7 below ₱476; 12 positions, max default ₱1,000, 2 defaults below ₱476.
+- **Files Touched**: `app/Domain/Validation/DailyRateRule.php` (new: `MAX` 10,000, `FALLBACK_MINIMUM` 476, `error()`, `maxMessage()`), `app/Http/Controllers/EmployeeController.php` (validate + validateRehire use the rule), `app/Application/SalaryService.php`, `app/Http/Controllers/SalaryController.php`, `app/Http/Controllers/SettingsController.php` (position default ceiling, fallbacks), `app/Infrastructure/Persistence/EmployeeRepository.php` (fallback), views `hr/employees/edit.php`, `hr/employees/rehire.php`, `hr/salary/form.php`, `hr/settings/index.php` (min/max from policy + rule, Wage Order XII-26 note, `data-msg-max`), `tests/Unit/DailyRateRuleTest.php` (new), `tests/Unit/QaPayrollSheetRegressionTest.php` (1M test → 10k), `regression/generate_regression_tests.php` + `.xlsx`.
+- **Deploy (owner OK, 2026-11-22)**: server copies diffed against local — every hunk was this change; backup `/root/backups/wbpms/daily_rate_cap_20261122_161422/` (`files.tgz` of the 9 changed files + `payroll_policy_version.sql`); LF copies staged, `php -l` on PHP 8.3.6 clean, `install -o www-data`, `systemctl reload php8.3-fpm`; md5 live = staged 10/10; `/login` `/health` 200, `/hr/employees/new` `/hr/settings/positions` `/hr/salary` 302 signed out; no new app-error.log lines, 0 5xx.
+- **Prod data**: guarded transaction (exactly 1 Approved policy, 1 row updated, SIGNAL otherwise) set `payroll_policy_version` #1 `minimum_daily_wage` 460.00 → 476.00; audit_logs #593 `settings_updated/minimum_daily_wage_updated`. A first attempt with SQL inline in the ssh command broke on quoting and stopped at statement 1 (nothing committed, no audit row, no stray files); rerun from an uploaded .sql file. Live read-only CLI smoke: `EmployeeRepository`/`SalaryService` minimum 476; 1,000,000 and 10,000.01 refused, 10,000 and 476 OK, 460 refused.
+- **Left for HR**: 7 Active salaries and 2 position defaults are below ₱476 and were not changed; Edit Employee save for those employees is refused until HR raises the rate in Salary Management. Local DB still ₱460 (unreachable from the shell). Not signed in to check pages live.
+- **Tests & Regression**:
+  - `php -l`: 13/13 pass (PHP 8.2)
+  - PHPUnit Unit: VPS PHP 8.3 in /tmp copy: 425 tests, 0 failures, 17 errors (all `could not find driver`, no `pdo_sqlite`); targeted DailyRateRule/QaPayrollSheet/DefenseFixes 28 tests, 0 failures, 3 driver errors
+  - PHPUnit Integration: Not run (no reachable `wbpms_test`)
+  - PHPStan L6: 0 errors on the 6 changed app files
+  - Stub render: settings/salary/edit/rehire show min 476.00, max 10000.00, new max message
+  - Regression TC IDs: `EMP-030` (new), `EMP-017`, `SAL-007` (updated); 257 cases
+
 ### 2026-11-22 — Claude Code (Claude Opus 5.5) — Modification: cash advance date + leave credit year
 - **Request**: Owner (via developer): add a date to cash advances so HR can put an advance in the month it belongs to while computing payroll from past-month biometrics; asked whether approving 2025 leave in 2026 causes problems.
 - **Findings**: `cash_advance_request_detail` had no date; `PayrollService::activeCashAdvanceInfo()` took ₱500 from any run while an advance was Active, regardless of the run's period. Every leave balance/debit path used `date('Y')`, so 2025 leave approved in 2026 spent the 2026 credit. The other developer's repo (romarsares `3899e2e`) has both bugs: its `request_date` only feeds a one-per-week limit; payroll ignores it.

@@ -42,7 +42,8 @@ $err = static fn(string $key): string => isset($errors[$key])
 $currentEffective = $bank !== null ? substr((string) $bank['effective_from'], 0, 10) : '';
 $defaultEffective = max(date('Y-m-d'), $currentEffective);
 
-$BANK_NAMES = ['BDO', 'BPI', 'Metrobank', 'UnionBank', 'Landbank', 'PNB', 'RCBC', 'Security Bank', 'Other'];
+// Light Diamond pays salaries through BDO only (FieldRules::PAYROLL_BANK).
+$payrollBank = \Wbpms\Domain\Validation\FieldRules::PAYROLL_BANK;
 ?>
 
 <div class="page-header">
@@ -81,26 +82,12 @@ $BANK_NAMES = ['BDO', 'BPI', 'Metrobank', 'UnionBank', 'Landbank', 'PNB', 'RCBC'
 
         <div class="form-row">
             <div class="form-group">
-                <label for="bank_name">Bank Name <span style="color:#dc2626">*</span></label>
-                <?php
-                $selectedBank = $pv('bank_name', 'bank_name', 'BDO');
-                $isOther = !in_array($selectedBank, $BANK_NAMES, true) && $selectedBank !== '';
-                $selectVal = $isOther ? 'Other' : $selectedBank;
-                ?>
-                <select id="bank_name_select" onchange="syncBankName(this)"
-                        class="<?= isset($errors['bank_name']) ? 'is-invalid' : '' ?>">
-                    <?php foreach ($BANK_NAMES as $bname): ?>
-                    <option value="<?= Formatter::escape($bname) ?>"
-                            <?= $selectVal === $bname ? 'selected' : '' ?>>
-                        <?= Formatter::escape($bname) ?>
-                    </option>
-                    <?php endforeach; ?>
-                </select>
+                <label for="bank_name">Bank</label>
                 <input type="text" id="bank_name" name="bank_name"
-                       value="<?= $selectedBank ?>"
-                       placeholder="Type bank name"
-                       style="margin-top:.4rem;<?= ($selectVal !== 'Other') ? 'display:none' : '' ?>"
+                       value="<?= Formatter::escape($payrollBank) ?>"
+                       readonly
                        class="<?= isset($errors['bank_name']) ? 'is-invalid' : '' ?>">
+                <small class="muted">Salaries are paid through <?= Formatter::escape($payrollBank) ?> only.</small>
                 <?= $err('bank_name') ?>
             </div>
         </div>
@@ -179,27 +166,6 @@ $BANK_NAMES = ['BDO', 'BPI', 'Metrobank', 'UnionBank', 'Landbank', 'PNB', 'RCBC'
         </div>
     </form>
 </div>
-
-<script>
-function syncBankName(sel) {
-    var input = document.getElementById('bank_name');
-    if (sel.value === 'Other') {
-        input.style.display = '';
-        input.focus();
-    } else {
-        input.style.display = 'none';
-        input.value = sel.value;
-    }
-}
-// Sync on page load so the hidden input always carries the correct value
-(function () {
-    var sel = document.getElementById('bank_name_select');
-    var input = document.getElementById('bank_name');
-    if (sel.value !== 'Other') {
-        input.value = sel.value;
-    }
-})();
-</script>
 
 <style>
 .flash-info    { background: #eff6ff; border: 1px solid #93c5fd; color: #1e40af; border-radius: .375rem; padding: .75rem 1rem; }
