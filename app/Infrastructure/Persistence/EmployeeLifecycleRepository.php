@@ -98,9 +98,11 @@ final class EmployeeLifecycleRepository extends AbstractRepository
                 $conflicts[] = $label;
             }
         }
+        // Only Active rows: closeActiveRelationships() leaves an Archived
+        // (voided) salary or schedule row alone, so it cannot break the archive.
         foreach ($inclusiveTables as $label => $table) {
             $stmt = $this->pdo()->prepare(
-                "SELECT COUNT(*) FROM {$table} WHERE employee_id = :id AND effective_to IS NULL AND effective_from > :date"
+                "SELECT COUNT(*) FROM {$table} WHERE employee_id = :id AND effective_to IS NULL AND status = 'Active' AND effective_from > :date"
             );
             $stmt->execute([':id' => $employeeId, ':date' => $lastWorkingDate]);
             if ((int) $stmt->fetchColumn() > 0) {
@@ -109,6 +111,57 @@ final class EmployeeLifecycleRepository extends AbstractRepository
         }
 
         return $conflicts;
+    }
+
+    /**
+     * Removes the part of a scheduled branch-transfer / biometric-enrollment
+     * plan that falls on or after the archive date, so the archive can close
+     * what is left. [USER-016]
+     *
+     * - Rows that would only start on or after the archive date never took
+     *   effect and are deleted. A branch row that attendance, a punch or a
+     *   payroll already points to is kept (archiveStartDateConflicts() then
+     *   reports it instead of the database failing).
+     * - Closed rows that end after the archive date are cut back to end on it.
+     *
+     * Both tables use an exclusive end date (chk_eba_period / chk_ebe_period
+     * require effective_to > effective_from), so a row starting on the archive
+     * date cannot be closed on it and has to go.
+     *
+     * @return array{branch:int,biometric:int} number of rows deleted per table
+     */
+    public function dropUnstartedAssignments(int $employeeId, string $archiveEffectiveDate): array
+    {
+        $pdo = $this->pdo();
+
+        $deleteBranch = $pdo->prepare(
+            'DELETE FROM employee_branch_assignment
+              WHERE employee_id = :id
+                AND effective_from >= :date
+                AND NOT EXISTS (SELECT 1 FROM attendance a WHERE a.branch_assignment_id = employee_branch_assignment.branch_assignment_id)
+                AND NOT EXISTS (SELECT 1 FROM biometric_punch bp WHERE bp.branch_assignment_id = employee_branch_assignment.branch_assignment_id)
+                AND NOT EXISTS (SELECT 1 FROM payroll p WHERE p.branch_assignment_id = employee_branch_assignment.branch_assignment_id)'
+        );
+        $deleteBranch->execute([':id' => $employeeId, ':date' => $archiveEffectiveDate]);
+
+        $deleteBiometric = $pdo->prepare(
+            'DELETE FROM employee_biometric_enrollment WHERE employee_id = :id AND effective_from >= :date'
+        );
+        $deleteBiometric->execute([':id' => $employeeId, ':date' => $archiveEffectiveDate]);
+
+        foreach (['employee_branch_assignment', 'employee_biometric_enrollment'] as $table) {
+            $pdo->prepare(
+                "UPDATE {$table} SET effective_to = :new_to
+                  WHERE employee_id = :id AND effective_from < :before AND effective_to > :after"
+            )->execute([
+                ':new_to' => $archiveEffectiveDate,
+                ':id'     => $employeeId,
+                ':before' => $archiveEffectiveDate,
+                ':after'  => $archiveEffectiveDate,
+            ]);
+        }
+
+        return ['branch' => $deleteBranch->rowCount(), 'biometric' => $deleteBiometric->rowCount()];
     }
 
     public function closeActiveRelationships(int $employeeId, string $archiveEffectiveDate, ?string $lastWorkingDate = null): void

@@ -399,17 +399,16 @@ final class AttendanceController
         $defaultFrom = $manilaNow->modify('first day of this month')->format('Y-m-d');
         $defaultTo = $manilaNow->format('Y-m-d');
 
-        $dateFrom = trim((string) ($_GET['date_from'] ?? $defaultFrom));
-        $dateTo = trim((string) ($_GET['date_to'] ?? $defaultTo));
-        if (!$this->isIsoDate($dateFrom) || !$this->isIsoDate($dateTo) || $dateFrom > $dateTo) {
-            $dateFrom = $defaultFrom;
-            $dateTo = $defaultTo;
-        }
-        // A bounded range keeps the matrix-equivalent absence calculation
-        // responsive while still allowing a full rolling year.
-        if ((new \DateTimeImmutable($dateFrom))->diff(new \DateTimeImmutable($dateTo))->days > 366) {
-            $dateFrom = (new \DateTimeImmutable($dateTo))->modify('-366 days')->format('Y-m-d');
-        }
+        // HR's From date is kept as chosen; a range longer than the limit
+        // ends earlier and says so (it used to move From silently). [ATT-031]
+        $range = \Wbpms\Domain\Attendance\ReportDateRange::resolve(
+            isset($_GET['date_from']) ? (string) $_GET['date_from'] : null,
+            isset($_GET['date_to']) ? (string) $_GET['date_to'] : null,
+            $defaultFrom,
+            $defaultTo,
+        );
+        $dateFrom = $range['from'];
+        $dateTo = $range['to'];
 
         $branchValue = filter_var($_GET['branch_id'] ?? null, FILTER_VALIDATE_INT);
         $branchId = $branchValue !== false && $branchValue !== null && $branchValue > 0 ? $branchValue : null;
@@ -560,6 +559,7 @@ final class AttendanceController
             'summary' => $summary,
             'dateFrom' => $dateFrom,
             'dateTo' => $dateTo,
+            'rangeNotice' => $range['notice'],
             'branches' => $pdo->query("SELECT branch_id, branch_name FROM branch WHERE status = 'Active' ORDER BY branch_name")->fetchAll(),
             'branchId' => $branchId,
             'search' => $search,
@@ -1537,6 +1537,11 @@ final class AttendanceController
             $service = $this->adjustmentService();
             $attendance = $service->findForAdjustment($attendanceId);
             $history = $service->adjustmentHistory($attendanceId);
+            $rawPunches = $service->rawBiometricPunches(
+                (int) $attendance['employee_id'],
+                (string) $attendance['attendance_date'],
+            );
+            $reviewNote = $service->reviewNote($attendance, $rawPunches);
         } catch (RuntimeException $e) {
             ViewRenderer::flashError(UserMessage::from($e));
             $this->redirect('/hr/attendance');
@@ -1546,6 +1551,8 @@ final class AttendanceController
         ViewRenderer::render('hr/attendance/adjust', [
             'attendance' => $attendance,
             'history' => $history,
+            'rawPunches' => $rawPunches,
+            'reviewNote' => $reviewNote,
             'errors' => [],
             'old' => [],
         ], 'Adjust Attendance');
@@ -1582,6 +1589,11 @@ final class AttendanceController
                 $service = $this->adjustmentService();
                 $attendance = $service->findForAdjustment($attendanceId);
                 $history = $service->adjustmentHistory($attendanceId);
+                $rawPunches = $service->rawBiometricPunches(
+                    (int) $attendance['employee_id'],
+                    (string) $attendance['attendance_date'],
+                );
+                $reviewNote = $service->reviewNote($attendance, $rawPunches);
             } catch (RuntimeException) {
                 ViewRenderer::flashError('Attendance record not found.');
                 $this->redirect('/hr/attendance');
@@ -1590,6 +1602,8 @@ final class AttendanceController
             ViewRenderer::render('hr/attendance/adjust', [
                 'attendance' => $attendance,
                 'history' => $history,
+                'rawPunches' => $rawPunches,
+                'reviewNote' => $reviewNote,
                 'errors' => [UserMessage::from($e)],
                 'old' => $input,
             ], 'Adjust Attendance');

@@ -427,7 +427,8 @@ $cellStyles = [
                             <strong style="font-size:11px"><?= Formatter::escape((string) ($cell['time_in'] ?? '—')) ?></strong><br>
                             <span style="font-size:10px"><?= Formatter::escape((string) ($cell['time_out'] ?? '—')) ?></span>
                             <?php if ($status === 'Draft'): ?><span style="display:block;font-size:9px;font-weight:700">DRAFT</span><?php endif; ?>
-                            <?php if ($status === 'Incomplete' || $status === 'ReviewRequired'): ?><span style="display:block;font-size:9px;font-weight:700">REVIEW</span><?php endif; ?>
+                            <?php if ($status === 'Incomplete'): ?><span style="display:block;font-size:9px;font-weight:700">INCOMPLETE</span><?php endif; ?>
+                            <?php if ($status === 'ReviewRequired'): ?><span style="display:block;font-size:9px;font-weight:700">REVIEW</span><?php endif; ?>
                         </a>
                         <?php elseif ($leave !== null): ?>
                         <a href="<?= $base ?>/hr/requests/<?= (int) $leave['request_id'] ?>"
@@ -503,7 +504,7 @@ $cellStyles = [
         </table>
     </div>
     <div style="padding:.75rem 1rem;border-top:1px solid var(--line);font-size:12px;color:#64748b">
-        Click a populated day to review or adjust it. Green = complete, yellow/red = review or absence, blue = draft import, purple = approved leave, orange = holiday. Each remaining cell identifies its exemption: no biometric upload, no schedule, rest day, pre-hire, today, or future.
+        Click a populated day to review or adjust it. Green = complete, yellow = incomplete (missing punch), red = review required / absence, blue = draft import, purple = approved leave, orange = holiday. Each remaining cell identifies its exemption: no biometric upload, no schedule, rest day, pre-hire, today, or future.
     </div>
     <?php endif; ?>
 </div>

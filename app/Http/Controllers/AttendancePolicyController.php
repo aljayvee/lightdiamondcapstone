@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use DateTimeZone;
 use RuntimeException;
 use Wbpms\Application\AttendancePolicyService;
+use Wbpms\Domain\Attendance\ReportDateRange;
 use Wbpms\Http\Middleware\AuthMiddleware;
 use Wbpms\Http\View\ViewRenderer;
 use Wbpms\Http\View\UserMessage;
@@ -46,6 +47,14 @@ final class AttendancePolicyController
         $counts = $service->counts();
 
         $today = new DateTimeImmutable('now', new DateTimeZone('Asia/Manila'));
+        // Keep the range HR last evaluated (it used to reset to the last
+        // 30 days after every run). [ATT-031]
+        $range = ReportDateRange::resolve(
+            isset($_GET['from']) ? (string) $_GET['from'] : null,
+            isset($_GET['to']) ? (string) $_GET['to'] : null,
+            $today->modify('-30 days')->format('Y-m-d'),
+            $today->format('Y-m-d'),
+        );
         ViewRenderer::render('hr/attendance/policy/index', [
             'rows' => $rows,
             'counts' => $counts,
@@ -53,8 +62,8 @@ final class AttendancePolicyController
             // Policy flags are an attendance-management function, not a
             // separate module in the sidebar.
             'activePage' => 'attendance',
-            'defaultFrom' => $today->modify('-30 days')->format('Y-m-d'),
-            'defaultTo' => $today->format('Y-m-d'),
+            'defaultFrom' => $range['from'],
+            'defaultTo' => $range['to'],
         ], 'Attendance Policy Flags');
     }
 
@@ -74,14 +83,16 @@ final class AttendancePolicyController
             return;
         }
 
+        $range = (new DateTimeImmutable($from))->format('m/d/y') . '–' . (new DateTimeImmutable($to))->format('m/d/y');
         try {
             $created = $this->makeService()->evaluateAll($from, $to);
-            ViewRenderer::flash("Attendance policy evaluation complete. {$created} new flag(s) created for HR review.");
+            ViewRenderer::flash("Attendance policy evaluation for {$range} complete. {$created} new flag(s) created for HR review.");
         } catch (RuntimeException $e) {
             ViewRenderer::flashError(UserMessage::from($e));
         }
 
-        $this->redirect('/hr/attendance/policy/flags');
+        // Come back to the same range. [ATT-031]
+        $this->redirect('/hr/attendance/policy/flags?' . http_build_query(['from' => $from, 'to' => $to]));
     }
 
     // -----------------------------------------------------------------------
@@ -111,12 +122,34 @@ final class AttendancePolicyController
             ViewRenderer::flashError(UserMessage::from($e));
         }
 
-        $this->redirect('/hr/attendance/policy/flags');
+        $this->redirect('/hr/attendance/policy/flags' . $this->listQueryFromReferer());
     }
 
     // -----------------------------------------------------------------------
     // Private helpers
     // -----------------------------------------------------------------------
+
+    /**
+     * "?from=…&to=…&status=…" of the flags page HR came from, so a review
+     * keeps the evaluated range and filters. Only known keys are kept.
+     */
+    private function listQueryFromReferer(): string
+    {
+        $referer = (string) ($_SERVER['HTTP_REFERER'] ?? '');
+        $path = (string) parse_url($referer, PHP_URL_PATH);
+        if ($referer === '' || !str_ends_with($path, '/hr/attendance/policy/flags')) {
+            return '';
+        }
+        parse_str((string) parse_url($referer, PHP_URL_QUERY), $query);
+        $keep = [];
+        foreach (['from', 'to', 'status', 'type', 'employee_number'] as $key) {
+            if (isset($query[$key]) && is_string($query[$key]) && $query[$key] !== '') {
+                $keep[$key] = $query[$key];
+            }
+        }
+
+        return $keep === [] ? '' : '?' . http_build_query($keep);
+    }
 
     private function isIsoDate(string $value): bool
     {

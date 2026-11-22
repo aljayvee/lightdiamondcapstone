@@ -9,6 +9,7 @@ use DateTimeZone;
 use PDO;
 use RuntimeException;
 use Wbpms\Domain\CashAdvance\CashAdvanceDate;
+use Wbpms\Domain\Payroll\HolidayCalendarCoverage;
 use Wbpms\Domain\Payroll\HolidayPayCalculator;
 use Wbpms\Domain\Payroll\HolidayRecord;
 use Wbpms\Domain\Payroll\HolidayType;
@@ -2380,6 +2381,23 @@ final class PayrollService
      */
     public function computeRunIfReady(int $runId, int $computedByUserId, bool $confirmedUnresolvedDays): int
     {
+        // No holidays on file for the period's year means holiday pay would be
+        // silently missed (run 35, Aug 21, 2025). HR cannot confirm past this.
+        $run = $this->findRunOrFail($runId);
+        $periodStart = (string) $run['period_start'];
+        $periodEnd   = (string) $run['period_end'];
+        $missingYears = HolidayCalendarCoverage::missingYears(
+            $periodStart,
+            $periodEnd,
+            (new WorkCalendarRepository($this->connection))->yearsWithActiveHolidays(
+                (int) substr($periodStart, 0, 4),
+                (int) substr($periodEnd, 0, 4),
+            ),
+        );
+        if ($missingYears !== []) {
+            throw new RuntimeException(HolidayCalendarCoverage::message($missingYears));
+        }
+
         $issues = $this->readinessIssues($runId);
         if ($issues !== [] && !$confirmedUnresolvedDays) {
             $count = count($issues);

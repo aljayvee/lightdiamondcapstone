@@ -27,7 +27,11 @@ final class TransactionSlipStampPrintTest extends TestCase
         $view = self::view();
 
         self::assertDoesNotMatchRegularExpression('/class="f[\s"]/', $view, 'No form-art layer may be drawn.');
-        self::assertStringNotContainsString('Network Bank', $view);
+        // The bank's name may appear in instructions, never drawn on the slip.
+        $slipBody = substr($view, (int) strpos($view, '<div class="slip">'));
+        $slipBody = substr($slipBody, 0, (int) strpos($slipBody, '<!-- /.slip -->'));
+        self::assertStringNotContainsString('Network Bank', $slipBody);
+        self::assertStringNotContainsString('>BDO<', $slipBody);
         self::assertStringNotContainsString('--bdo-blue', $view);
         self::assertStringNotContainsString('Machine Validation', $view);
         self::assertStringNotContainsString('Use separate slip(s)', $view);
@@ -50,9 +54,18 @@ final class TransactionSlipStampPrintTest extends TestCase
     {
         $view = self::view();
 
-        // Details, guide tags and alignment crosses all move together.
-        self::assertSame(3, substr_count($view, 'transform: translate(var(--nudge-x), var(--nudge-y));'));
-        self::assertStringContainsString("var KEY = 'wbpms.slipNudge';", $view);
+        // Details, guide tags and alignment crosses all move together: the built-in
+        // office printer calibration plus HR's fine-tuning.
+        self::assertSame(3, substr_count($view, 'transform: translate(calc(var(--cal-x) + var(--nudge-x)), calc(var(--cal-y) + var(--nudge-y)));'));
+        // Measured 2026-11-22 from HR's printed slip (printed at +1.0 / +1.0 mm:
+        // details landed 3.1-3.7 mm left and 0.1-1.1 mm low).
+        self::assertStringContainsString('--cal-x:   3.4mm;', $view);
+        self::assertStringContainsString('--cal-y:   -0.5mm;', $view);
+        self::assertStringContainsString('--nudge-x: 0mm;', $view);
+        self::assertStringContainsString('--nudge-y: 0mm;', $view);
+        // New key: fine-tuning saved before the calibration (+1.0 / +1.0) is not stacked on it.
+        self::assertStringContainsString("var KEY = 'wbpms.slipNudge.v2';", $view);
+        self::assertStringNotContainsString("var KEY = 'wbpms.slipNudge';", $view);
         self::assertStringContainsString('var LIMIT = 15;', $view);
         // Browser storage can be blocked: reads and writes are guarded.
         self::assertSame(2, substr_count($view, 'catch (err)'));
@@ -69,22 +82,27 @@ final class TransactionSlipStampPrintTest extends TestCase
 
         self::assertMatchesRegularExpression('/width: 212\.8mm;\s+height: 100mm;/', $view);
         foreach ([
-            'left:3.24mm;top:14.03mm',              // Deposits tick
-            'left:6.41mm;top:17.27mm',              // Current tick
-            'left:6.41mm;top:20.57mm',              // Savings tick
+            'left:2.59mm;top:14.03mm',              // Deposits tick (box 3.24; glyph ink sits 0.65 mm right)
+            'left:5.76mm;top:17.27mm',              // Current tick (box 6.41)
+            'left:5.76mm;top:20.57mm',              // Savings tick (box 6.41)
             'left:35.5mm;top:17.18mm;width:85.5mm', // account name (line at 21.78)
             'left:35.5mm;top:24.86mm;width:85.5mm', // account number (line at 29.46)
-            'left:35.5mm;top:33.32mm;width:42.5mm', // payor (line at 37.62)
-            'left:79.2mm;top:33.32mm;width:42mm',   // reference
-            'left:35.5mm;top:40.71mm;width:42.5mm', // company (line at 45.31)
-            'left:132.7mm;top:8.16mm;width:70mm',   // date (line at 12.86)
-            'left:129.2mm;top:21.02mm;width:30mm',  // description row
-            'left:160.37mm;top:21.02mm;width:15.5mm', // pieces column (160.37-175.9)
-            'left:176.6mm;top:21.02mm;width:31mm',  // amount column (175.9-208.3)
             'left:176.6mm;top:78.93mm;width:31mm',  // total row (78.93-87.19)
         ] as $position) {
             self::assertStringContainsString($position, $view);
         }
+        // HR 2026-11-22: Payor's Name, Reference No. and Company Name stay blank;
+        // the amounts are centred in the Amount column, not against its edge.
+        self::assertStringNotContainsString('$referenceNo', $view);
+        $slipBody = substr($view, (int) strpos($view, '<div class="slip">'));
+        self::assertStringNotContainsString("\$slip['employee_name']", $slipBody);
+        self::assertStringNotContainsString('>Light Diamond Enterprises</div>', $view);
+        self::assertStringContainsString('.d.tot { height: 8.26mm; line-height: 8.26mm; font-size: 11pt; text-align: center; }', $view);
+        // HR 2026-11-22: only ticks, Account Name, Account No., Date and Total Amount print.
+        self::assertSame(1, substr_count($slipBody, '<div class="d tot"'));
+        self::assertSame(3, substr_count($slipBody, '<div class="d v"'));    // account name, number, date
+        self::assertSame(0, substr_count($slipBody, '<div class="d row'));   // no Payroll / 1 / row amount
+        self::assertStringContainsString('left:132.7mm;top:8.16mm;width:70mm"><?= $e(date(\'m/d/Y\')) ?></div>', $slipBody); // date above its line
         // Four alignment crosses, centred on line corners of the slip.
         self::assertSame(4, substr_count($view, '<div class="rx" style="'));
     }

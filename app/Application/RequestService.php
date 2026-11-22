@@ -9,6 +9,7 @@ use RuntimeException;
 use Wbpms\Domain\CashAdvance\CashAdvanceDate;
 use Wbpms\Domain\Leave\LeaveDayCounter;
 use Wbpms\Domain\Payroll\ApprovedOvertimeCalculator;
+use Wbpms\Domain\Requests\RequestFormBalances;
 use Wbpms\Infrastructure\Database\Connection;
 use Wbpms\Infrastructure\Persistence\WorkCalendarRepository;
 
@@ -1101,6 +1102,52 @@ final class RequestService
                 'entitlement_id'  => (int) $r['entitlement_id'],
             ];
         }, $rows);
+    }
+
+    /**
+     * Sick-leave and cash-advance figures for the HR New Request form, for
+     * every active employee. Read-only: unlike leaveBalance() it never
+     * provisions a credit row (an employee with none shows the 4-day grant).
+     * [REQ-025]
+     *
+     * @return array{
+     *     currentYear:int,
+     *     sickLeaveDays:float,
+     *     cashAdvanceMax:float,
+     *     leave: array<int, array<int, array{balance:float, entitled:float}>>,
+     *     cashAdvance: array<int, float>
+     * }
+     */
+    public function requestFormBalances(): array
+    {
+        $pdo         = $this->connection->pdo();
+        $currentYear = (int) date('Y');
+
+        $onFile = $pdo->query("SELECT DISTINCT leave_year FROM leave_entitlement WHERE leave_type = 'Sick'");
+        $years  = RequestFormBalances::years(
+            $currentYear,
+            $onFile === false ? [] : array_map('intval', $onFile->fetchAll(PDO::FETCH_COLUMN)),
+        );
+
+        $leaveRowsByYear = [];
+        foreach ($years as $year) {
+            $leaveRowsByYear[$year] = $this->leaveCreditsForAll($year);
+        }
+
+        // Same figure as the employee's My Requests card: unpaid balance of
+        // Active advances.
+        $cash = $pdo->query(
+            "SELECT employee_id, COALESCE(SUM(remaining_balance), 0) AS outstanding
+               FROM cash_advance_history
+              WHERE status = 'Active'
+              GROUP BY employee_id"
+        );
+        $cashByEmployee = [];
+        foreach ($cash === false ? [] : $cash->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $cashByEmployee[(int) $row['employee_id']] = (float) $row['outstanding'];
+        }
+
+        return RequestFormBalances::payload($currentYear, $leaveRowsByYear, $cashByEmployee);
     }
 
     /**

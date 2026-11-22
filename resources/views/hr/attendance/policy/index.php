@@ -98,6 +98,9 @@ $typeLabel = static function (string $type): string {
 <!-- Filters -->
 <form method="GET" action="<?= $base ?>/hr/attendance/policy/flags"
       style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:1.25rem">
+    <?php /* Filtering keeps the evaluation range above. [ATT-031] */ ?>
+    <input type="hidden" name="from" value="<?= Formatter::escape($defaultFrom) ?>">
+    <input type="hidden" name="to" value="<?= Formatter::escape($defaultTo) ?>">
     <div>
         <label style="font-size:.78rem;font-weight:500;color:#374151;display:block;margin-bottom:.2rem">Status</label>
         <select name="status" style="padding:.45rem .7rem;border:1px solid #d1d5db;border-radius:4px;font-size:.875rem">

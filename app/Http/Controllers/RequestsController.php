@@ -83,6 +83,7 @@ final class RequestsController
         ViewRenderer::render('hr/requests/form', [
             'employees' => $this->activeEmployeeList($repo),
             'types'     => $service->requestTypes(),
+            'balances'  => $service->requestFormBalances(),
             'errors'    => [],
             'old'       => [],
         ], 'New Request');
@@ -125,6 +126,7 @@ final class RequestsController
             ViewRenderer::render('hr/requests/form', [
                 'employees' => $this->activeEmployeeList($repo),
                 'types'     => $service->requestTypes(),
+                'balances'  => $service->requestFormBalances(),
                 'errors'    => ['employee_id' => 'Please select an employee.'],
                 'old'       => $_POST,
             ], 'New Request');
@@ -140,6 +142,7 @@ final class RequestsController
             ViewRenderer::render('hr/requests/form', [
                 'employees' => $this->activeEmployeeList($repo),
                 'types'     => $service->requestTypes(),
+                'balances'  => $service->requestFormBalances(),
                 'errors'    => ['_general' => UserMessage::from($e)],
                 'old'       => $_POST,
             ], 'New Request');

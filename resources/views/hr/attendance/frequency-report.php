@@ -18,6 +18,7 @@ $summary ??= ['tardy_days' => 0, 'late_minutes' => 0, 'absence_days' => 0, 'empl
 $branches ??= [];
 $dateFrom ??= '';
 $dateTo ??= '';
+$rangeNotice ??= null;
 $branchId ??= null;
 $search ??= '';
 $backPath ??= '/hr/attendance';
@@ -69,6 +70,12 @@ $rangeLabel = $dateFrom !== '' && $dateTo !== ''
             <a href="<?= $base ?>/hr/attendance/frequency-report" class="btn btn-secondary">Clear</a>
         </div>
     </form>
+    <?php if ($rangeNotice !== null && $rangeNotice !== ''): ?>
+    <p class="frequency-range-notice" role="status"
+       style="margin:.6rem 0 0;padding:.5rem .75rem;border:1px solid #fcd34d;background:#fffbeb;border-radius:6px;color:#92400e;font-size:.85rem">
+        <?= Formatter::escape($rangeNotice) ?>
+    </p>
+    <?php endif; ?>
 </section>
 
 <section class="report-print-title print-only">

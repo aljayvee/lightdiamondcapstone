@@ -45,6 +45,9 @@ final class EmployeeLifecycleService
             if ($blockers !== []) {
                 throw new \RuntimeException('Archive is blocked by: ' . implode(', ', $blockers) . '. Resolve these items first.');
             }
+            // Scheduled transfers that would start after the employee leaves
+            // never take effect; drop them instead of refusing. [USER-016]
+            $this->repository->dropUnstartedAssignments($employeeId, $archiveDate);
             $conflicts = $this->repository->archiveStartDateConflicts($employeeId, $archiveDate, $lastWorkingDate);
             if ($conflicts !== []) {
                 throw new \RuntimeException('Archive date conflicts with a future ' . implode(', ', $conflicts) . '. Adjust the effective dates first.');

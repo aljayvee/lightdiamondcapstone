@@ -197,6 +197,13 @@ Verified lessons learned directly from `c:\xampp\htdocs\wbpms`. Append new entri
 - **Fix**: Redirect to `?month=YYYY-MM`, validate it with `PayrollMonth::parse`, show that month's rows and pass the month on (`/hr/payroll/create?month=`). Error re-renders keep the posted selection.
 - **Prevention Rule**: When a POST acts on a user-chosen scope (month, branch, employee), carry that scope in the redirect URL and let the GET page default to it; check the live data before calling it a save bug.
 
+### L-029: Payroll For A Past Year Needs That Year's Holiday Calendar
+
+- **Symptom**: Run 35 (08/15–08/21/25) "computation wrong": every figure matched the formulas, yet 12 employees were short 30 % of a day's rate.
+- **Root Cause**: Only `HolidayCalendar2026Seeder` existed. Payroll and leave charging read holidays from `holiday_calendar`; with no 2025 rows, 08/21/25 (Ninoy Aquino Day) was an ordinary day. Nothing warned HR.
+- **Fix**: `HolidayCalendar2025Seeder` (verified against Proc. 727 + separate Islamic/election/INC proclamations) loaded on prod; `computeRunIfReady` refuses a period whose year has no active holiday (`HolidayCalendarCoverage`).
+- **Prevention Rule**: When a "computation is wrong" report comes in, recompute from raw inputs (punches, schedule, rate, calendar) before touching formulas — here the formulas were right and the inputs were missing. Seed every year that payroll may cover, from the proclamation text, before computing it.
+
 ## 3. Regression Test Suite Module Map (196 Cases)
 
 Source of truth: `regression/generate_regression_tests.php` -> `regression/WBPMS_Regression_Test_Suite.xlsx`.
@@ -376,4 +383,38 @@ Source of truth: `regression/generate_regression_tests.php` -> `regression/WBPMS
 - Root cause: HR created an employee profile (position "Business Owner") and the owner login was linked to it; nothing in User Management or payroll prevented it. Payroll pays every employee with a branch assignment and a salary.
 - Fix: `AuthenticationPolicy::isLinkedOwner()` blocks the link in `UserService`; `PayrollService::eligibleEmployees()` skips owner-linked employees as a safety net; prod EMP-002 removed.
 - Prevention rule: owner accounts keep `users.employee_id` NULL. Only HR Head and Employee accounts have employee profiles, salaries and payroll.
+
+
+## 2026-11-22 — Archive must handle effective-dated rows that have not started (Claude Code)
+- Symptom: Owner archive of user 68 showed the generic error (ref 046354144d63); log: `chk_eba_period` failed in `EmployeeLifecycleRepository::closeActiveRelationships()`.
+- Root cause: archive closes every open row on one date, but HR can schedule branch transfers (and rows can be created with a future hire date). `employee_branch_assignment` / `employee_biometric_enrollment` need `effective_to > effective_from` (exclusive end; salary/schedule allow `>=`), so a row starting on/after the archive date cannot be closed. `UserService::archive()` copied the close step from `EmployeeLifecycleService::archive()` without its `archiveStartDateConflicts()` guard, so the CHECK constraint was the only guard and its PDOException became the generic message. The conflict check also counted voided (`Archived`) salary rows the close step never touches.
+- Fix: `dropUnstartedAssignments()` runs before the guard in both archive paths (deletes unreferenced rows starting on/after the archive date, cuts later end dates back); conflict check aligned with what close touches (`status = 'Active'`); user archive refuses in words.
+- Prevention rule: two entry points to one lifecycle action must share the same guard sequence. When adding a step that writes effective dates, check the CHECK constraint for every row shape (open, closed-in-the-future, not-yet-started), and make the guard match the exact rows the write step touches.
+
+## 2026-11-22 — `leaveBalance()` writes; use `leaveCreditsForAll()` for display (Claude Code)
+- Context: HR New Request form now shows each employee's sick-leave credit and unpaid cash advance (REQ-025).
+- Quirk: `RequestService::leaveBalance()` calls `ensureLeaveEntitlement()`, which INSERTs a 4-day entitlement + Grant ledger row when none exists. Calling it per employee to render a page would provision credits for everyone just by opening it. `leaveCreditsForAll($year)` is read-only and reports 4.00 for an employee with no row.
+- Prevention rule: for lists/indicators use the read-only query; keep `leaveBalance()` for submit/approve paths. Sick-leave credit is per calendar year (`LeaveDayCounter::creditYear`), so an indicator must follow the request's dates, not always the current year.
+- Tooling note: retagging with a blanket `sed 's/REQ-023/…/'` hit an existing `[REQ-023]` comment. Check that a regression ID is free (`grep "\['REQ-0"`) before tagging, and limit replacements to the lines you wrote.
+
+## 2026-11-22 — Never adjust a filter value silently: ui-enhance.js remembers what the page shows (Claude Code)
+- Symptom: Attendance Frequency Report "auto" changed From 08/01/25 to November 2025 and kept doing it on later visits.
+- Root cause: the controller capped long ranges by moving From (To − 366 days). `public/assets/ui-enhance.js` (auto filter) saves a GET filter form's date inputs to localStorage after the page renders and restores them on a plain visit with `location.replace`, so a server-side adjustment becomes the user's "remembered" choice.
+- Fix: `Domain/Attendance/ReportDateRange` keeps From, shortens To only past 732 days, and returns a notice the page shows.
+- Prevention rule: when a GET filter value must change, change the end the user did not pick and tell them on the page. Pages whose POST action redirects back (policy flags Evaluate) should carry the chosen range in the redirect query, or the inputs fall back to defaults.
+- Debug tip: nginx access log shows a plain GET followed in the same second by a GET with dates = the auto-filter restore.
+
+## 2026-11-22 — Calibrate stamp printing from a photo of a real print, not by eye (Claude Code)
+- Symptom: BDO slip details printed left and low even after HR nudged +1/+1 mm.
+- Root cause: the office printer places the A5 page about 3.4 mm left / 0.5 mm low of the slip fed against its guide; the ✓ glyph's ink also sits ~0.65 mm right of its em box. HR's nudges were in the wrong direction for x.
+- Fix: measured with a homography from the photo to slip mm (known line corners from `docs/bdo-transaction-slip-layout.md`), built the printer offset in as `--cal-x/--cal-y`, moved tick boxes for the glyph, new localStorage key so old nudges do not stack.
+- Prevention rule: keep three things apart — slip geometry (field table), glyph offsets (per character, any printer), printer offset (`--cal-*`, one constant). When the built-in offset changes, change the storage key of the per-browser fine-tuning too.
+- Debug tip: Pillow + numpy SVD homography from ~20 points gives ≤ 0.4 mm; measure ink with a luminance threshold (< 85) — blue slip lines stay above it.
+
+## 2026-11-22 — `ReviewRequired` attendance must be resolvable without altering times, and Adjust must show raw punches (Antigravity / Gemini 4 Neon)
+- Symptom: During July 2026 attendance review (`EMP-021`), HR mistook an `Incomplete` cell (`07/24` `07:11`, labeled `REVIEW`) for a `ReviewRequired` multi-punch cell (`07/20` `07:02 11:47 14:46 16:32`, also labeled `REVIEW`). Furthermore, when HR opens a `ReviewRequired` day whose pre-filled first-in / last-out times are valid, `AttendanceAdjustmentService::adjust()` threw `"No attendance values were changed."` because it only checked `$timeChanged || $overtimeChanged` and ignored `a.status`.
+- Root cause: `findForUpdate()` did not select `a.status`, so `adjust()` treated a `ReviewRequired → Complete` confirmation with unchanged times as a no-op; `adjust.php` never loaded `biometric_punch`; `index.php` rendered the same `REVIEW` badge text for both `Incomplete` and `ReviewRequired`.
+- Fix: Select `a.status` in `findForUpdate()`, permit status resolution (`ReviewRequired` / `Incomplete` → `Complete`) as `adjustment_type = 'review_confirmed'` with `old.status`/`new.status` in `audit_logs`, add read-only `rawBiometricPunches()` (excluding `Cancelled`/`Processing` batches) + pure domain `AttendanceReviewNote`, render raw punches and reason on `adjust.php`, and split matrix labels into `INCOMPLETE` (yellow) vs `REVIEW` (red).
+- Prevention rule: Any state-transition form that lets HR approve/resolve a flagged record must treat the status change (`ReviewRequired → Complete`) as a meaningful audited change even when field values stay identical, and must display the underlying immutable evidence (`biometric_punch`) that triggered the flag.
+
 

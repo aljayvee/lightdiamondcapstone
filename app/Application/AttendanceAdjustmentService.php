@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use DateTimeZone;
 use PDO;
 use RuntimeException;
+use Wbpms\Domain\Attendance\AttendanceReviewNote;
 use Wbpms\Domain\Attendance\WorkSchedule;
 use Wbpms\Domain\Payroll\ApprovedOvertimeCalculator;
 use Wbpms\Infrastructure\Database\Connection;
@@ -83,6 +84,75 @@ final class AttendanceAdjustmentService
         );
         $stmt->execute([':id' => $attendanceId]);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Return immutable matched biometric punches for an employee and date,
+     * excluding Cancelled and Processing import batches.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function rawBiometricPunches(int $employeeId, string $attendanceDate): array
+    {
+        $stmt = $this->connection->pdo()->prepare(
+            "SELECT bp.source_local_at,
+                    bp.raw_record,
+                    bp.source_workbook_row,
+                    bp.source_date_column,
+                    COALESCE(bd.device_name, CONCAT('Device #', bp.device_id)) AS device_name
+               FROM biometric_punch bp
+               JOIN attendance_import_batch aib ON aib.import_batch_id = bp.import_batch_id
+               LEFT JOIN biometric_device bd ON bd.device_id = bp.device_id
+              WHERE bp.employee_id = :employee_id
+                AND bp.match_status = 'matched'
+                AND DATE(bp.source_local_at) = :attendance_date
+                AND aib.status IN ('Draft', 'Approved', 'Completed')
+              ORDER BY bp.source_local_at ASC, bp.punch_id ASC"
+        );
+        $stmt->execute([
+            ':employee_id'     => $employeeId,
+            ':attendance_date' => $attendanceDate,
+        ]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Human-readable explanation of why an imported attendance day requires
+     * HR review or is incomplete, derived from its raw biometric punches and
+     * assigned work schedule.
+     *
+     * @param array<string, mixed>       $attendance Row from findForAdjustment()
+     * @param list<array<string, mixed>> $rawPunches Rows from rawBiometricPunches()
+     */
+    public function reviewNote(array $attendance, array $rawPunches): ?string
+    {
+        if ($rawPunches === []) {
+            return null;
+        }
+
+        $timezone   = new DateTimeZone('Asia/Manila');
+        $timestamps = [];
+        foreach ($rawPunches as $punch) {
+            $localAt = (string) ($punch['source_local_at'] ?? '');
+            if ($localAt === '') {
+                continue;
+            }
+            $timestamps[] = new DateTimeImmutable($localAt, $timezone);
+        }
+
+        $schedule = new WorkSchedule(
+            0,
+            substr((string) $attendance['work_start_time'], 0, 5),
+            substr((string) $attendance['work_end_time'], 0, 5),
+            (int) $attendance['break_minutes'],
+            (int) $attendance['standard_minutes'],
+            (int) $attendance['grace_minutes'],
+            (bool) $attendance['overtime_allowed'],
+            $attendance['break_start_time'] !== null ? substr((string) $attendance['break_start_time'], 0, 5) : null,
+            $attendance['break_end_time'] !== null ? substr((string) $attendance['break_end_time'], 0, 5) : null,
+        );
+
+        return AttendanceReviewNote::describe((string) ($attendance['status'] ?? ''), $timestamps, $schedule);
     }
 
     /**
@@ -436,11 +506,15 @@ final class AttendanceAdjustmentService
 
             $timeChanged = $timeIn !== $attendance['time_in'] || $timeOut !== $attendance['time_out'];
             $overtimeChanged = $overtime !== (int) $attendance['overtime_minutes'];
-            if (!$timeChanged && !$overtimeChanged) {
+            $oldStatus = (string) ($attendance['status'] ?? '');
+            $needsResolution = in_array($oldStatus, ['ReviewRequired', 'Incomplete'], true);
+            if (!$timeChanged && !$overtimeChanged && !$needsResolution) {
                 throw new RuntimeException('No attendance values were changed.');
             }
 
-            $type = $timeChanged ? 'time_correction' : 'overtime_recalculated';
+            $type = $timeChanged
+                ? 'time_correction'
+                : ($overtimeChanged ? 'overtime_recalculated' : 'review_confirmed');
             $now = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
 
             $pdo->prepare(
@@ -487,8 +561,18 @@ final class AttendanceAdjustmentService
             $description = json_encode([
                 'attendance_date' => $attendance['attendance_date'],
                 'reason' => $reason,
-                'old' => ['time_in' => $attendance['time_in'], 'time_out' => $attendance['time_out'], 'overtime_minutes' => (int) $attendance['overtime_minutes']],
-                'new' => ['time_in' => $timeIn, 'time_out' => $timeOut, 'overtime_minutes' => $overtime],
+                'old' => [
+                    'time_in' => $attendance['time_in'],
+                    'time_out' => $attendance['time_out'],
+                    'overtime_minutes' => (int) $attendance['overtime_minutes'],
+                    'status' => $oldStatus,
+                ],
+                'new' => [
+                    'time_in' => $timeIn,
+                    'time_out' => $timeOut,
+                    'overtime_minutes' => $overtime,
+                    'status' => 'Complete',
+                ],
             ], JSON_UNESCAPED_SLASHES);
             $pdo->prepare(
                 "INSERT INTO audit_logs
@@ -512,7 +596,7 @@ final class AttendanceAdjustmentService
     {
         $stmt = $pdo->prepare(
             "SELECT a.attendance_id, a.employee_id, a.attendance_date, a.time_in, a.time_out,
-                    a.overtime_minutes,
+                    a.overtime_minutes, a.status,
                     COALESCE(ws.work_start_time, '07:00:00') AS work_start_time,
                     COALESCE(ws.work_end_time, '16:00:00') AS work_end_time,
                     COALESCE(ws.break_minutes, 60) AS break_minutes,

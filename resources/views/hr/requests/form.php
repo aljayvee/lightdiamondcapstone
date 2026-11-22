@@ -10,6 +10,7 @@ use Wbpms\Http\View\Formatter;
  * Variables injected by RequestsController::create()/store() + ViewRenderer:
  *   list<array{id:int,employee_number:string,last_name:string,first_name:string,branch_name:string}> $employees
  *   list<array{request_type_id:int,type_name:string}> $types
+ *   array $balances — RequestFormBalances::payload() (sick-leave credit per year, unpaid cash advance)
  *   array<string,string> $errors   — '_general' for service errors, field keys for field errors
  *   array<string,mixed>  $old      — repopulated POST values on re-render
  *   string $base
@@ -18,6 +19,7 @@ use Wbpms\Http\View\Formatter;
 
 $employees ??= [];
 $types     ??= [];
+$balances  ??= \Wbpms\Domain\Requests\RequestFormBalances::payload((int) date('Y'), [], []);
 $errors    ??= [];
 $old       ??= [];
 $base      ??= '';
@@ -84,6 +86,32 @@ foreach ($types as $t) {
                 <?php endforeach; ?>
             </select>
             <?= $err('employee_id') ?>
+        </div>
+
+        <!-- ── Balances of the chosen employee (same figures as the employee's My Requests) [REQ-025] ── -->
+        <div id="balance-panel" aria-live="polite"
+             style="display:none;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.75rem;margin:-.25rem 0 1rem">
+            <div style="border:1px solid #e5e7eb;border-radius:6px;padding:.65rem .9rem;background:#fafaf9">
+                <div style="display:flex;align-items:center;gap:.4rem;font-size:.72rem;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.05em">
+                    <?= \Wbpms\Http\View\Icon::svg('leaf', 16) ?> Sick leave <span id="bal-leave-year"></span>
+                </div>
+                <div style="margin-top:.3rem;font-size:.9rem;color:#374151">
+                    <strong id="bal-leave-left" style="font-size:1.2rem">—</strong>
+                    / <span id="bal-leave-total">—</span> days left
+                </div>
+                <div id="bal-leave-note" style="font-size:.75rem;color:#9ca3af;margin-top:.15rem">Credit of the year of the From date.</div>
+            </div>
+            <div style="border:1px solid #e5e7eb;border-radius:6px;padding:.65rem .9rem;background:#fafaf9">
+                <div style="display:flex;align-items:center;gap:.4rem;font-size:.72rem;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.05em">
+                    <?= \Wbpms\Http\View\Icon::svg('banknote', 16) ?> Cash advance
+                </div>
+                <div style="margin-top:.3rem;font-size:.9rem;color:#374151">
+                    <strong id="bal-ca-out" style="font-size:1.2rem">—</strong> unpaid
+                </div>
+                <div style="font-size:.75rem;color:#9ca3af;margin-top:.15rem">
+                    Max: ₱<?= number_format(\Wbpms\Domain\Requests\RequestFormBalances::CASH_ADVANCE_MAX, 2) ?> per request
+                </div>
+            </div>
         </div>
 
         <!-- ── Request type ────────────────────────────────────────────── -->
@@ -250,6 +278,47 @@ foreach ($types as $t) {
 
     sel.addEventListener('change', update);
     update(); // apply on page load when re-rendering with POST data
+}());
+
+// Sick-leave credit and unpaid cash advance of the chosen employee. [REQ-025]
+(function () {
+    var data   = <?= json_encode($balances, JSON_FORCE_OBJECT | JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT) ?>;
+    var emp    = document.getElementById('employee_id');
+    var from   = document.getElementById('start_date');
+    var panel  = document.getElementById('balance-panel');
+    var money  = function (n) {
+        return '₱' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    };
+
+    function year() {
+        var m = /^(\d{4})-\d{2}-\d{2}$/.exec(from && !from.disabled ? from.value : '');
+        return m ? parseInt(m[1], 10) : data.currentYear;
+    }
+
+    function render() {
+        if (!emp.value) {
+            panel.style.display = 'none';
+            return;
+        }
+        var y      = year();
+        var credit = (data.leave[y] || {})[emp.value] || { balance: data.sickLeaveDays, entitled: data.sickLeaveDays };
+        var owed   = data.cashAdvance[emp.value] || 0;
+        var left   = document.getElementById('bal-leave-left');
+        var out    = document.getElementById('bal-ca-out');
+
+        document.getElementById('bal-leave-year').textContent = String(y);
+        left.textContent = Number(credit.balance).toFixed(2);
+        left.style.color = credit.balance > 0 ? '#059669' : '#dc2626';
+        document.getElementById('bal-leave-total').textContent = Number(credit.entitled).toFixed(2);
+        out.textContent  = money(owed);
+        out.style.color  = owed > 0 ? '#d97706' : '#059669';
+        panel.style.display = 'grid';
+    }
+
+    emp.addEventListener('change', render);
+    document.getElementById('request_type_id').addEventListener('change', render);
+    if (from) { from.addEventListener('change', render); from.addEventListener('input', render); }
+    render();
 }());
 </script>
 

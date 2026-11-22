@@ -494,6 +494,8 @@ final class UserService
 
             (new \Wbpms\Infrastructure\Session\DatabaseSessionHandler($pdo))->invalidateAllByUserId($userId);
 
+            $auditNote = '';
+
             // If this user is linked to an active employee, close effective-dated
             // relationships properly rather than leaving orphaned open assignments.
             if (!empty($user['employee_id'])) {
@@ -507,13 +509,28 @@ final class UserService
                         $lastWorkingDate = (string) $empRow['hire_date'];
                         $archiveDate = (new \DateTimeImmutable($lastWorkingDate))->modify('+1 day')->format('Y-m-d');
                     }
+                    // Same checks as Employee Management's archive, so a
+                    // scheduled transfer is dropped and anything left is
+                    // reported in words, not as a database error. [USER-016]
+                    $dropped = $lifecycleRepo->dropUnstartedAssignments($empId, $archiveDate);
+                    $conflicts = $lifecycleRepo->archiveStartDateConflicts($empId, $archiveDate, $lastWorkingDate);
+                    if ($conflicts !== []) {
+                        throw new RuntimeException('This account\'s employee has a future '
+                            . implode(', ', $conflicts) . ' that starts after '
+                            . (new \DateTimeImmutable($lastWorkingDate))->format('m/d/y')
+                            . '. Adjust the effective dates first, then archive again.');
+                    }
                     $lifecycleRepo->closeActiveRelationships($empId, $archiveDate, $lastWorkingDate);
                     $lifecycleRepo->setEmployeeStatus($empId, 'Archived');
+                    if ($dropped['branch'] > 0 || $dropped['biometric'] > 0) {
+                        $auditNote = "; dropped unstarted from {$archiveDate}: "
+                            . "{$dropped['branch']} branch assignment(s), {$dropped['biometric']} biometric enrollment(s)";
+                    }
                 }
             }
 
             $this->insertAudit($pdo, $actingUserId, 'user_archived', 'users', $userId,
-                "Archived user_id={$userId}");
+                "Archived user_id={$userId}" . $auditNote);
         });
     }
 

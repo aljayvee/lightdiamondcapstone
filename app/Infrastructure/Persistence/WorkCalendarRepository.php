@@ -82,6 +82,27 @@ final class WorkCalendarRepository extends AbstractRepository
     }
 
     /**
+     * Years between $fromYear and $toYear that have at least one active holiday.
+     *
+     * @return list<int>
+     */
+    public function yearsWithActiveHolidays(int $fromYear, int $toYear): array
+    {
+        $stmt = $this->pdo()->prepare(
+            "SELECT DISTINCT YEAR(holiday_date)
+               FROM holiday_calendar
+              WHERE status = 'Active'
+                AND holiday_date BETWEEN :from_date AND :to_date"
+        );
+        $stmt->execute([
+            ':from_date' => sprintf('%04d-01-01', $fromYear),
+            ':to_date'   => sprintf('%04d-12-31', $toYear),
+        ]);
+
+        return array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+    }
+
+    /**
      * Dates with attendance that payroll pays as worked days (same filter as
      * PayrollService::computeRun's attendance summary).
      *

@@ -413,8 +413,98 @@ final class UserLifecycleTest extends IntegrationTestCase
     }
 
     // -----------------------------------------------------------------------
+    // USER-016 — archive with scheduled (not yet started) transfers
+    // -----------------------------------------------------------------------
+
+    /**
+     * USER-016 (prod ref 046354144d63): an employee hired tomorrow with two
+     * scheduled branch transfers. Archiving the linked login used to close the
+     * open 3rd branch row before it started and hit chk_eba_period. Now the
+     * unstarted rows are dropped and the first row is cut back to the archive
+     * date. A voided (Archived) future salary row does not block it.
+     */
+    public function testArchiveLinkedUserDropsUnstartedBranchTransfers(): void
+    {
+        $hire    = (new \DateTimeImmutable('tomorrow', new \DateTimeZone('Asia/Manila')))->format('Y-m-d');
+        $plus    = static fn (int $d): string => (new \DateTimeImmutable($hire))->modify("+{$d} day")->format('Y-m-d');
+        $empId   = $this->insertLinkedEmployee($hire);
+        $userId  = $this->insertUser($this->insertRole('Employee'), $empId);
+
+        $first  = $this->insertBranchAssignment($empId, $this->insertBranch(), $hire, $plus(7));
+        $second = $this->insertBranchAssignment($empId, $this->insertBranch(), $plus(7), $plus(9));
+        $third  = $this->insertBranchAssignment($empId, $this->insertBranch(), $plus(9));
+        $this->insertEnrollment($empId, $hire);
+        $this->insertWorkSchedule($empId, $hire);
+        $this->pdo->prepare("INSERT INTO salary (employee_id, daily_rate, effective_from, status) VALUES (:e, 800, :f, 'Archived')")
+            ->execute([':e' => $empId, ':f' => $plus(3)]);
+
+        $this->buildService()->archive($userId, $this->actorId);
+
+        $archiveDate = $plus(1);
+        $rows = $this->pdo->prepare('SELECT branch_assignment_id, effective_to FROM employee_branch_assignment WHERE employee_id = :e');
+        $rows->execute([':e' => $empId]);
+        $branches = array_column($rows->fetchAll(\PDO::FETCH_ASSOC), 'effective_to', 'branch_assignment_id');
+
+        self::assertSame([$first => $archiveDate], $branches, 'only the started row is kept, ending on the archive date');
+        self::assertArrayNotHasKey($second, $branches);
+        self::assertArrayNotHasKey($third, $branches);
+
+        $enrollment = $this->pdo->prepare('SELECT effective_to, status FROM employee_biometric_enrollment WHERE employee_id = :e');
+        $enrollment->execute([':e' => $empId]);
+        self::assertSame([['effective_to' => $archiveDate, 'status' => 'Inactive']], $enrollment->fetchAll(\PDO::FETCH_ASSOC));
+
+        $status = $this->pdo->prepare('SELECT status FROM employee WHERE employee_id = :e');
+        $status->execute([':e' => $empId]);
+        self::assertSame('Archived', $status->fetchColumn());
+        self::assertSame('Archived', $this->buildService()->findOrFail($userId)['status']);
+    }
+
+    /**
+     * USER-016: an Active salary change that starts after the last working day
+     * still blocks the archive, with words instead of a database error.
+     */
+    public function testArchiveLinkedUserRefusesFutureActiveSalaryInWords(): void
+    {
+        $today  = (new \DateTimeImmutable('now', new \DateTimeZone('Asia/Manila')))->format('Y-m-d');
+        $empId  = $this->insertLinkedEmployee($today);
+        $userId = $this->insertUser($this->insertRole('Employee'), $empId);
+        $this->insertBranchAssignment($empId, $this->insertBranch(), $today);
+        $this->insertSalary($empId, (new \DateTimeImmutable($today))->modify('+5 day')->format('Y-m-d'));
+
+        try {
+            $this->buildService()->archive($userId, $this->actorId);
+            self::fail('Expected RuntimeException for a future Active salary rate');
+        } catch (RuntimeException $e) {
+            self::assertNotInstanceOf(\PDOException::class, $e);
+            self::assertStringContainsString('future salary rate', $e->getMessage());
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Private helpers
     // -----------------------------------------------------------------------
+
+    private function insertLinkedEmployee(string $hireDate): int
+    {
+        $empId = $this->insertEmployee();
+        $this->pdo->prepare('UPDATE employee SET hire_date = :d WHERE employee_id = :e')
+            ->execute([':d' => $hireDate, ':e' => $empId]);
+
+        return $empId;
+    }
+
+    private function insertEnrollment(int $employeeId, string $from): void
+    {
+        $u = uniqid();
+        $this->pdo->exec("INSERT INTO attendance_site (site_code, site_name, status) VALUES ('S{$u}', 'Site {$u}', 'Active')");
+        $siteId = (int) $this->pdo->lastInsertId();
+        $this->pdo->exec("INSERT INTO biometric_device (site_id, device_code, status) VALUES ({$siteId}, 'D{$u}', 'Active')");
+        $deviceId = (int) $this->pdo->lastInsertId();
+        $this->pdo->prepare(
+            "INSERT INTO employee_biometric_enrollment (employee_id, device_id, device_employee_code, effective_from, status)
+             VALUES (:e, :d, :c, :f, 'Active')"
+        )->execute([':e' => $employeeId, ':d' => $deviceId, ':c' => substr($u, -8), ':f' => $from]);
+    }
 
     private function buildService(): UserService
     {

@@ -4,17 +4,22 @@ declare(strict_types=1);
 
 /** @var array<string,mixed> $attendance */
 /** @var list<array<string,mixed>> $history */
+/** @var list<array<string,mixed>> $rawPunches */
+/** @var ?string $reviewNote */
 /** @var list<string> $errors */
 /** @var array<string,string> $old */
 
 use Wbpms\Http\View\Formatter;
 
-$history ??= [];
+$history    ??= [];
+$rawPunches ??= [];
+$reviewNote ??= null;
 
 $value = static function (string $key, string $fallback = '') use ($old): string {
     return (string) ($old[$key] ?? $fallback);
 };
 $timeValue = static fn (?string $time): string => $time === null ? '' : substr($time, 0, 5);
+$isReviewRequired = (string) ($attendance['status'] ?? '') === 'ReviewRequired';
 ?>
 
 <div class="page-header">
@@ -41,11 +46,51 @@ $timeValue = static fn (?string $time): string => $time === null ? '' : substr($
     </div>
 </div>
 
+<?php if ($rawPunches !== []):
+    $firstPunch = $rawPunches[0];
+    $deviceName = trim((string) ($firstPunch['device_name'] ?? ''));
+    $srcRow     = isset($firstPunch['source_workbook_row']) && $firstPunch['source_workbook_row'] !== null ? (int) $firstPunch['source_workbook_row'] : null;
+    $srcCol     = trim((string) ($firstPunch['source_date_column'] ?? ''));
+    $sourceMeta = [];
+    if ($deviceName !== '') {
+        $sourceMeta[] = $deviceName;
+    }
+    if ($srcRow !== null && $srcCol !== '') {
+        $sourceMeta[] = "Workbook row {$srcRow}, col {$srcCol}";
+    }
+?>
+<div class="card" style="margin-bottom:1rem;max-width:760px">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:.75rem;flex-wrap:wrap;margin-bottom:.5rem">
+        <strong style="font-size:.9rem">Raw Biometric Punches (<?= count($rawPunches) ?>)</strong>
+        <?php if ($sourceMeta !== []): ?>
+            <small style="color:#6b7280"><?= Formatter::escape(implode(' · ', $sourceMeta)) ?></small>
+        <?php endif; ?>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:.45rem;margin-bottom:.5rem">
+        <?php foreach ($rawPunches as $rp):
+            $localAt = (string) ($rp['source_local_at'] ?? '');
+            $hm = strlen($localAt) >= 16 ? substr($localAt, 11, 5) : $localAt;
+        ?>
+            <span style="display:inline-block;padding:.25rem .6rem;border-radius:9999px;background:#f1f5f9;border:1px solid #cbd5e1;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.85rem;font-weight:600;color:#0f172a"><?= Formatter::escape($hm) ?></span>
+        <?php endforeach; ?>
+    </div>
+    <?php if ($reviewNote !== null): ?>
+        <div style="margin-top:.5rem;padding:.65rem .85rem;border-radius:6px;font-size:.85rem;<?= $isReviewRequired ? 'background:#fff1f2;border:1px solid #fecdd3;color:#9f1239' : 'background:#fffbeb;border:1px solid #fde68a;color:#92400e' ?>">
+            <?= Formatter::escape($reviewNote) ?>
+        </div>
+    <?php endif; ?>
+</div>
+<?php endif; ?>
+
 <div class="card" style="max-width:760px">
     <form method="POST" action="<?= $base ?>/hr/attendance/<?= (int) $attendance['attendance_id'] ?>/adjust">
         <input type="hidden" name="_csrf" value="<?= Formatter::escape($csrf) ?>">
 
+        <?php if ($isReviewRequired): ?>
+        <p style="margin-top:0;color:#6b7280;font-size:.9rem">This day requires HR review before it can be included in payroll. You may confirm the pre-filled times as-is with a reason to mark it Complete, or enter corrected times. Overtime is recorded only when an approved overtime request overlaps the actual overtime window.</p>
+        <?php else: ?>
         <p style="margin-top:0;color:#6b7280;font-size:.9rem">Enter both times to resolve an incomplete record. Worked, late, and undertime are recalculated from the assigned schedule. Overtime is recorded only when an approved overtime request overlaps the actual overtime window.</p>
+        <?php endif; ?>
         <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem">
             <div>
                 <label for="time_in">Time In</label>
@@ -74,7 +119,7 @@ $timeValue = static fn (?string $time): string => $time === null ? '' : substr($
         <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:.75rem 1rem;margin:1rem 0;color:#92400e;font-size:.875rem">
             Changes are blocked if the related payroll is approved. If a payroll is only computed or pending, recompute it after saving this correction.
         </div>
-        <button type="submit" class="btn btn-primary">Save audited adjustment</button>
+        <button type="submit" class="btn btn-primary"><?= $isReviewRequired ? 'Confirm & save audited adjustment' : 'Save audited adjustment' ?></button>
     </form>
 </div>
 

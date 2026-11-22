@@ -8,8 +8,10 @@
  * Print mode (?print=1) never reproduces the bank's slip: it shows only the
  * details (class .d) on a blank 212.8 x 100 mm sheet, positioned in mm so
  * they land in the slip's boxes, with neutral guide tags (class .g) that do
- * not print. HR aligns each printer from the toolbar (--nudge-x/--nudge-y,
- * saved in the browser) and can test on plain paper with alignment crosses.
+ * not print. The office printer's offset is built in (--cal-x/--cal-y,
+ * measured from HR's printed slip); HR fine-tunes from the toolbar
+ * (--nudge-x/--nudge-y, saved in the browser) and can test on plain paper
+ * with alignment crosses.
  * Field positions come from a 400 dpi scan: docs/bdo-transaction-slip-layout.md.
  * Screen mode (no ?print) shows the filter form + table. [REP-021]
  *
@@ -170,7 +172,8 @@ $base             ??= '';
      sheet with neutral guide tags (class .g) in our own words; the tags,
      the outline and the toolbar never print. Alignment per printer:
      --nudge-x / --nudge-y, set from the toolbar and remembered in this
-     browser. Never move individual fields to calibrate.
+     browser, on top of the built-in office printer calibration
+     --cal-x / --cal-y. Never move individual fields to calibrate.
      ================================================================ -->
 <!doctype html>
 <html lang="en">
@@ -182,8 +185,13 @@ $base             ??= '';
 
 :root {
     --guide:   #94a3b8;
-    --nudge-x: 0mm;   /* printer calibration: + moves details right */
-    --nudge-y: 0mm;   /* printer calibration: + moves details down  */
+    /* Built-in calibration for the office printer, measured 2026-11-22 from a
+       photo of HR's printed slip (printed at +1.0 / +1.0 mm, details landed
+       3.1-3.7 mm left and 0.1-1.1 mm low). See docs/bdo-transaction-slip-layout.md. */
+    --cal-x:   3.4mm;
+    --cal-y:   -0.5mm;
+    --nudge-x: 0mm;   /* fine-tuning on top of the calibration: + moves details right */
+    --nudge-y: 0mm;   /* fine-tuning on top of the calibration: + moves details down  */
 }
 
 body {
@@ -252,25 +260,24 @@ body {
     letter-spacing: .04em;
     white-space: nowrap;
     line-height: 1;
-    transform: translate(var(--nudge-x), var(--nudge-y));
+    transform: translate(calc(var(--cal-x) + var(--nudge-x)), calc(var(--cal-y) + var(--nudge-y)));
 }
 
 /* ── Alignment crosses (.rx): screen + test print only. 4 mm cross, centre on a
       line corner of the real slip; drawn with borders so it prints without
       "background graphics". ── */
-.rx { width: 4mm; height: 4mm; transform: translate(var(--nudge-x), var(--nudge-y)); }
+.rx { width: 4mm; height: 4mm; transform: translate(calc(var(--cal-x) + var(--nudge-x)), calc(var(--cal-y) + var(--nudge-y))); }
 .rx::before, .rx::after { content: ""; position: absolute; border: 0 solid #dc2626; }
 .rx::before { left: 2mm; top: 0; height: 4mm; border-left-width: .25mm; }
 .rx::after  { left: 0; top: 2mm; width: 4mm; border-top-width: .25mm; }
 
 /* ── Details (.d): screen + print ── */
 .d     { font-weight: 700; color: #000; white-space: nowrap; overflow: hidden; line-height: 4.4mm; height: 4.4mm;
-         transform: translate(var(--nudge-x), var(--nudge-y)); }
+         transform: translate(calc(var(--cal-x) + var(--nudge-x)), calc(var(--cal-y) + var(--nudge-y))); }
 .d.v   { font-size: 9pt; }
 .d.vs  { font-size: 8pt; }
 .d.chk { width: 2.4mm; height: 2.4mm; line-height: 2.4mm; text-align: center; font-size: 8pt; }
-.d.row { height: 8.3mm; line-height: 8.3mm; font-size: 9pt; }
-.d.tot { height: 8.26mm; line-height: 8.26mm; font-size: 11pt; text-align: right; }
+.d.tot { height: 8.26mm; line-height: 8.26mm; font-size: 11pt; text-align: center; }
 .r     { text-align: right; }
 .c     { text-align: center; }
 @media screen {
@@ -309,8 +316,9 @@ body {
     <button type="button" class="step" id="nudge-reset">Reset</button>
     <a href="<?= $e($base) ?>/hr/reports/transaction-slips"><?= \Wbpms\Http\View\Icon::svg('chevron-left') ?> Back to Transaction Slips</a>
     <span class="hint">
-        Load the BDO Cash Transaction Slips you got from the bank into the printer. Only the details are printed
-        (A5 landscape, no margins, slip against the left guide). Test first: each red cross must sit on a line corner of the slip. Alignment is saved on this computer.
+        Load the BDO Network Bank Cash Transaction Slips into the printer. Only the ticks, account name, account number, date and total amount are printed
+        (A5 landscape, no margins, scale 100 % / Default, slip against the left guide). The office printer's offset is built in, so start at 0.0 mm;
+        use Left / Right and Up / Down only to fine-tune. Test first: each red cross must sit on a line corner of the slip. Fine-tuning is saved on this computer.
         &nbsp;·&nbsp; <?= count($slips) ?> slip(s) &nbsp;·&nbsp; <?= $e(date('m/d/Y')) ?>
     </span>
 </div>
@@ -321,8 +329,6 @@ body {
     $accountType = !empty($slip['account_type'])   ? strtolower((string) $slip['account_type']) : 'savings';
     $isSavings   = $accountType === 'savings';
     $isCurrent   = $accountType === 'current';
-    $referenceNo = 'PR-' . date('Ymd', (int) strtotime((string) $slip['period_start']))
-                   . '-' . str_pad((string) $slip['employee_id'], 4, '0', STR_PAD_LEFT);
     $netPay      = number_format((float) $slip['net_pay'], 2);
 ?>
 <div class="slip">
@@ -339,32 +345,25 @@ body {
     <div class="g" style="left:9.4mm;top:21.2mm">Savings</div>
     <div class="g" style="left:35.5mm;top:15.3mm">Account name</div>
     <div class="g" style="left:35.5mm;top:23.0mm">Account number</div>
-    <div class="g" style="left:35.5mm;top:31.4mm">Payor (employee)</div>
-    <div class="g" style="left:79.2mm;top:31.4mm">Reference</div>
-    <div class="g" style="left:35.5mm;top:38.8mm">Company</div>
     <div class="g" style="left:132.7mm;top:6.3mm">Date</div>
-    <div class="g" style="left:129.2mm;top:19.3mm">Description</div>
-    <div class="g" style="left:160.37mm;top:19.3mm">Qty</div>
-    <div class="g" style="left:176.6mm;top:19.3mm">Amount</div>
     <div class="g" style="left:176.6mm;top:77.2mm">Total</div>
 
     <!-- Details (screen + print): mm positions measured on a 400 dpi scan of a blank BDO slip
-         (docs/bdo-transaction-slip-layout.md). Each value sits just above its printed line. -->
-    <div class="d chk" style="left:3.24mm;top:14.03mm">✓</div>
-    <?php if ($isCurrent): ?><div class="d chk" style="left:6.41mm;top:17.27mm">✓</div><?php endif; ?>
-    <?php if ($isSavings): ?><div class="d chk" style="left:6.41mm;top:20.57mm">✓</div><?php endif; ?>
+         (docs/bdo-transaction-slip-layout.md). Each value sits just above its printed line.
+         Ticks: the tick glyph's ink sits 0.65 mm right of its em box centre, so each tick box
+         starts 0.65 mm left of its checkbox (measured on HR's printed slip, 2026-11-22). -->
+    <div class="d chk" style="left:2.59mm;top:14.03mm">✓</div>
+    <?php if ($isCurrent): ?><div class="d chk" style="left:5.76mm;top:17.27mm">✓</div><?php endif; ?>
+    <?php if ($isSavings): ?><div class="d chk" style="left:5.76mm;top:20.57mm">✓</div><?php endif; ?>
 
     <div class="d v"  style="left:35.5mm;top:17.18mm;width:85.5mm"><?= $e($accountName) ?></div>
     <div class="d v"  style="left:35.5mm;top:24.86mm;width:85.5mm"><?= $e($accountNo) ?></div>
-    <div class="d v"  style="left:35.5mm;top:33.32mm;width:42.5mm"><?= $e((string) $slip['employee_name']) ?></div>
-    <div class="d vs" style="left:79.2mm;top:33.32mm;width:42mm"><?= $e($referenceNo) ?></div>
-    <div class="d v"  style="left:35.5mm;top:40.71mm;width:42.5mm">Light Diamond Enterprises</div>
+    <!-- Only these are printed (HR, 2026-11-22): the Deposits + Savings/Current
+         ticks, Account Name, Account No., Date (day of printing = deposit date) and
+         Total Amount. Payor, Reference, Company and the Denomination rows stay blank. -->
 
     <div class="d v"  style="left:132.7mm;top:8.16mm;width:70mm"><?= $e(date('m/d/Y')) ?></div>
 
-    <div class="d row"   style="left:129.2mm;top:21.02mm;width:30mm">Payroll</div>
-    <div class="d row c" style="left:160.37mm;top:21.02mm;width:15.5mm">1</div>
-    <div class="d row r" style="left:176.6mm;top:21.02mm;width:31mm">₱ <?= $e($netPay) ?></div>
     <div class="d tot"   style="left:176.6mm;top:78.93mm;width:31mm">₱ <?= $e($netPay) ?></div>
 
 </div><!-- /.slip -->
@@ -372,7 +371,9 @@ body {
 
 <script>
 (function () {
-    var KEY = 'wbpms.slipNudge';
+    // v2 (2026-11-22): the printer offset is now built in (--cal-x/--cal-y), so
+    // fine-tuning saved before that (e.g. +1.0 / +1.0 mm) must not be added on top.
+    var KEY = 'wbpms.slipNudge.v2';
     var LIMIT = 15; // mm either way
     var nudge = { x: 0, y: 0 };
     try {
