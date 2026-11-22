@@ -22,6 +22,37 @@ Detailed chronological log of modifications, integrations, and fixes performed b
 
 ## Recorded Entries
 
+### 2026-11-22 — Claude Code (Claude Opus 5.5) — Fix: Generate Periods "changed back to November 2026"
+- **Report (developer)**: Settings → Payroll Periods → Generate Monthly Periods for another month/year; going on to payroll, it showed November 2026 again.
+- **Findings**: generation worked — prod `payroll_period` #41–45 (Aug 2025) created 05:59 CET. After the POST the controller redirected to `/hr/settings/periods` with no month, so the month box defaulted to `date('Y-m')` (2026-11) and the list (sorted `period_start DESC`, paginated) put November 2026 first; New Payroll Run had no idea which month was meant, and a refused create lost the chosen cutoff/branch.
+- **Files Touched**: `app/Domain/Payroll/PayrollMonth.php` (new), `app/Http/Controllers/SettingsController.php`, `app/Http/Controllers/PayrollController.php`, `resources/views/hr/settings/index.php`, `resources/views/hr/payroll/run.php`, `tests/Unit/PayrollMonthTest.php` (new), `regression/generate_regression_tests.php` (+ xlsx).
+- **Work Done**: `PayrollMonth::parse/label/overlaps/filter` (overlap = same rule Generate uses); store redirects to `?month=YYYY-MM` with "Payroll periods for August 2025 generated: …"; GET keeps that month in the box and lists only its cutoffs ("Periods for August 2025", "x of y", Show All Periods, Create Payroll Run for August 2025 → `/hr/payroll/create?month=`); create form pre-selects the month filter when the month has a cutoff starting in it; store error re-renders with the chosen cutoff + branch (so its month too). Invalid `?month` ignored.
+- **Tests & Regression**:
+  - `php -l`: 7/7 (5 app/view files, test, generator).
+  - PHPStan L6 on the 3 changed app files: 0 errors.
+  - PHPUnit Unit: VPS PHP 8.3 temp copy (removed): 452 tests, 0 failures, 17 errors (all `could not find driver`); `PayrollMonthTest` 19/19.
+  - PHPUnit Integration: not run (local MySQL access refused; change is routing/view only).
+  - Browser on stub render (8 sample periods): `?month=2025-08` → box 2025-08, 5 cutoffs incl. 08/29–09/04, 07/25–07/31 excluded, run link correct; run form `?month=2025-08` → filter August 2025 with its 5 cutoffs; `?period_id=43` → month kept; no month → All Periods; `2025-13` → ignored. 0 notices.
+  - Regression: `PAY-033` added (261).
+- **Deployment (owner OK, 2026-11-22 11:51 CET)**: the 4 changed live files were identical to git HEAD; `PayrollMonth.php` new. Backup `/root/backups/wbpms/payroll_month_keep_20261122_115114/files.tgz`; staged LF copies, `php -l` 5/5 on PHP 8.3, installed as www-data, reloaded php8.3-fpm, md5 5/5. `/login` `/health` 200; `/hr/settings/periods` (+ `?month=2025-08`) and `/hr/payroll/create?month=2025-08` 302 signed out; no new app-log or 5xx lines. Read-only live render with the 10 real periods: August 2025 filter = 5 cutoffs (incl. 08/29–09/04), title/month box/run link present, run form pre-selects August 2025; 0 notices.
+- **Not done**: not committed.
+
+### 2026-11-22 — Claude Code (Claude Opus 5.5) — Modification: transaction slips print as a stamp (no copy of the BDO slip)
+- **Request**: Owner/adviser: reproducing BDO's slip is not allowed. HR gets blank Cash Transaction Slips from BDO (client); the system should only print the details onto them, aligned to the real slip, "like a stamp machine".
+- **Before**: print mode drew a full on-screen replica (blue BDO header, "BDO / Network Bank / Cash Transaction Slip", every label, checkboxes, denomination grid) as layer `.f`, hidden only by `@media print`. Alignment only via CSS variables in code. No scanned slip image in the repo.
+- **Files Touched**: `resources/views/hr/reports/transaction-slips.php`, `tests/Unit/TransactionSlipStampPrintTest.php` (new), `regression/generate_regression_tests.php` (+ xlsx).
+- **Work Done**: removed the `.f` layer and its CSS; screen shows a blank 210 x 101.5 mm sheet (dashed outline) with the details (faint blue tint on screen only) and grey guide tags in our own words (`.g`, never printed); detail mm positions unchanged; toolbar: Print All Slips, Test Alignment (plain paper: first slip only + corner marks), Left/Right and Up/Down in 0.5 mm steps with Reset, saved in localStorage `wbpms.slipNudge` (try/catch, clamped to 15 mm); details, tags and corner marks share the same offset; page wording now says the slips come from the bank.
+- **Tests & Regression**:
+  - `php -l`: 3/3 (view, test, generator).
+  - PHPUnit Unit: VPS PHP 8.3 temp copy (removed): 433 tests, 0 failures, 17 errors (all `could not find driver`); `TransactionSlipStampPrintTest` 4/4.
+  - PHPUnit Integration: not run (view-only change; local MySQL access still refused).
+  - PHPStan: not applicable (no `app/` change).
+  - Browser (local `php -S` with sample slips): no bank art; escaped names; +1.5 mm moves details exactly 5.67 px; offset kept after reload; simulated print rules: normal = toolbar/tags/marks hidden, both slips' details shown; test = slip 2 hidden, corner marks shown. Render 0 notices.
+  - Regression: `REP-021` rewritten (stamp printing), 260 cases.
+- **Follow-up (same day, owner: "properly train the system to the BDO slip", example scan `BDO-Transaction-Slip.pdf`)**: the PDF is one 400 dpi JPEG (3400 x 4400 px on Letter, 0.0635 mm/px). Measured with numpy (blue rules, checkbox outlines, panel edges): slip 212.8 x 100 mm, not 210 x 101.5; old x values ~1.3 % too small (Amount column ~2 mm left), y ~0.85 mm too low (rows overlapped the line below). Every detail re-placed from the measured lines (table in new `docs/bdo-transaction-slip-layout.md`); row heights 8.3/8.26 mm; corner marks replaced by 4 red alignment crosses on slip line corners (the right corners of a 212.8 mm slip fall outside an A5 page). Verified by drawing the details on the scan with PIL (old layout drawn too for comparison: Pieces/Amount straddled the column lines), browser (cross centres exactly at the measured corners), Unit on VPS 8.3 433 / 0 fail / 17 driver errors, slip test 4/4 (29 assertions); regression `REP-008` rewritten, `REP-021` updated. Scan PDF left untracked on purpose (bank form).
+- **Deployment (owner OK, 2026-11-22 11:16 CET)**: live `transaction-slips.php` was identical to git HEAD. Backup `/root/backups/wbpms/slip_stamp_print_20261122_111612/files.tgz`; staged LF copy, `php -l` on PHP 8.3, installed as www-data, reloaded php8.3-fpm, md5 live = staged. `/login` `/health` 200; `/hr/reports/transaction-slips` (+ `?print=1`) 302 signed out; no new 5xx or app-log lines. Live CLI render on 8.3 with a sample slip: 0 notices, 4 alignment crosses, 12 details, name escaped, 0 bank art.
+- **Not done**: not committed. HR still needs one Test Alignment print on their printer with a real blank slip.
+
 ### 2026-11-22 — Claude Code (Claude Opus 5.5) — Fix: the Business Owner has no salary
 - **Request**: Owner: the system gives the Business Owner a salary, which is wrong (the owner has no salary).
 - **Findings (prod)**: owner login user #41 (BusinessOwner) was linked to employee #40 EMP-002, position "Business Owner" (job_position #1, default ₱1,000), Active, salary ₱700 effective 11/21/26, branch + schedule + biometric enrollment; 0 attendance/payroll/request/bank rows. `PayrollService::eligibleEmployees()` pays anyone with a branch assignment + salary, so the next run would have paid the owner. The schema already intends `users.employee_id` NULL for the owner (user #1 has none).

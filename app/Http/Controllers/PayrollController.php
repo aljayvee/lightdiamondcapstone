@@ -8,6 +8,7 @@ use PDO;
 use RuntimeException;
 use Wbpms\Application\PayrollAdjustmentService;
 use Wbpms\Application\PayrollService;
+use Wbpms\Domain\Payroll\PayrollMonth;
 use Wbpms\Http\Middleware\AuthMiddleware;
 use Wbpms\Http\View\ViewRenderer;
 use Wbpms\Http\View\UserMessage;
@@ -149,6 +150,8 @@ final class PayrollController
             // Pre-selected from the "Create run" link on another branch's run.
             'selectedPeriodId' => max(0, (int) ($_GET['period_id'] ?? 0)),
             'selectedBranchId' => max(0, (int) ($_GET['branch_id'] ?? 0)),
+            // Pre-selected month from Settings → Payroll Periods (PAY-033).
+            'selectedMonth'    => PayrollMonth::parse($_GET['month'] ?? null),
         ], 'Create Payroll Run');
     }
 
@@ -181,6 +184,9 @@ final class PayrollController
                 'periods'  => $periods,
                 'branches' => $branches,
                 'errors'   => [UserMessage::from($e)],
+                // Keep HR's choice (and so its month) when the run is refused.
+                'selectedPeriodId' => $data['payroll_period_id'],
+                'selectedBranchId' => $data['branch_id'],
             ], 'Create Payroll Run');
         }
     }

@@ -190,6 +190,13 @@ Verified lessons learned directly from `c:\xampp\htdocs\wbpms`. Append new entri
 - **Fix**: `cash_advance_request_detail.advance_date` (migration `20261122000036`), payroll filters `advance_date <= period_end` and subtracts repayments in other open runs; leave year = year of the leave dates (`LeaveDayCounter::creditYear`), cross-year ranges refused.
 - **Prevention Rule**: Any deduction or credit that payroll applies must be keyed to a business date compared with the run period, never to "now" or approval time, because runs are computed out of order. When several runs can be open at once, a balance read at compute time must subtract amounts already reserved by the other open runs.
 
+### L-028: After A POST, Redirect Back With The User's Choice Or The Page "Undoes" It
+
+- **Symptom**: Settings → Payroll Periods → Generate for August 2025 → the page showed November 2026; HR reported the month "changed back".
+- **Root Cause**: The data was saved. The PRG redirect dropped the chosen month, so the month box fell back to `date('Y-m')` and the newest-first, paginated list hid the new rows; the next page (New Payroll Run) had no month either.
+- **Fix**: Redirect to `?month=YYYY-MM`, validate it with `PayrollMonth::parse`, show that month's rows and pass the month on (`/hr/payroll/create?month=`). Error re-renders keep the posted selection.
+- **Prevention Rule**: When a POST acts on a user-chosen scope (month, branch, employee), carry that scope in the redirect URL and let the GET page default to it; check the live data before calling it a save bug.
+
 ## 3. Regression Test Suite Module Map (196 Cases)
 
 Source of truth: `regression/generate_regression_tests.php` -> `regression/WBPMS_Regression_Test_Suite.xlsx`.

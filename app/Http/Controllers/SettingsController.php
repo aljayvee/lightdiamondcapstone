@@ -6,6 +6,7 @@ namespace Wbpms\Http\Controllers;
 
 use RuntimeException;
 use Wbpms\Application\PayrollService;
+use Wbpms\Domain\Payroll\PayrollMonth;
 use Wbpms\Domain\Validation\DailyRateRule;
 use Wbpms\Http\View\ViewRenderer;
 use Wbpms\Http\View\UserMessage;
@@ -207,14 +208,23 @@ final class SettingsController
     // Payroll Periods
     // =========================================================================
 
-    /** GET /hr/settings/periods */
+    /**
+     * GET /hr/settings/periods[?month=YYYY-MM]
+     *
+     * With ?month= the page stays on that month: the month box keeps it and
+     * the list shows that month's cutoffs first (PAY-033).
+     */
     public function periods(array $params = []): void
     {
+        $month = PayrollMonth::parse($_GET['month'] ?? null);
+
         ViewRenderer::render('hr/settings/index', [
-            'activePage' => 'settings',
-            'tab'        => 'periods',
-            'periods'    => $this->payrollService()->listPeriods(),
-            'errors'     => [],
+            'activePage'    => 'settings',
+            'tab'           => 'periods',
+            'periods'       => $this->payrollService()->listPeriods(),
+            'errors'        => [],
+            'payroll_month' => $month ?? date('Y-m'),
+            'focus_month'   => $month,
         ], 'Settings');
     }
 
@@ -227,11 +237,13 @@ final class SettingsController
         try {
             $result = $service->createPeriodsForMonth($month);
             ViewRenderer::flash(sprintf(
-                'Payroll periods generated: %d created, %d already existed.',
+                'Payroll periods for %s generated: %d created, %d already existed.',
+                PayrollMonth::label($month),
                 $result['created'],
                 $result['existing']
             ));
-            $this->redirect('/hr/settings/periods');
+            // Come back on the generated month, not the current one (PAY-033).
+            $this->redirect('/hr/settings/periods?month=' . rawurlencode($month));
         } catch (RuntimeException $e) {
             ViewRenderer::render('hr/settings/index', [
                 'activePage'   => 'settings',
@@ -239,6 +251,7 @@ final class SettingsController
                 'periods'      => $service->listPeriods(),
                 'errors'       => [UserMessage::from($e)],
                 'payroll_month' => $month,
+                'focus_month'   => PayrollMonth::parse($month),
             ], 'Settings');
         }
     }

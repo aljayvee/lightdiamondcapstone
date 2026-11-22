@@ -20,7 +20,8 @@ use Wbpms\Http\View\Formatter;
  *
  * Periods tab:
  * @var list<array<string,mixed>>    $periods
- * @var string                       $period_start
+ * @var string                       $payroll_month  Month box value (YYYY-MM)
+ * @var string|null                  $focus_month    Month whose cutoffs the list shows (?month=, after Generate)
  *
  * Holidays tab:
  * @var list<array<string,mixed>>    $holidays
@@ -36,6 +37,7 @@ $editRow      ??= null;
 $input        ??= [];
 $periods      ??= [];
 $payroll_month ??= date('Y-m');
+$focus_month  ??= null;
 $holidays     ??= [];
 
 $e = static fn(string $key): string => isset($errors[$key])
@@ -383,13 +385,34 @@ openEditModal(
     </div>
 
     <!-- Period list -->
+    <?php
+    // After Generate (or ?month=) the list shows that month's cutoffs, not
+    // the newest periods, so HR sees what was just made (PAY-033).
+    $allPeriodCount = count($periods);
+    if ($focus_month !== null) {
+        $periods = \Wbpms\Domain\Payroll\PayrollMonth::filter($focus_month, $periods);
+    }
+    ?>
     <div class="card" style="padding:0;overflow:hidden">
-        <div style="padding:16px 20px 12px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center">
+        <div style="padding:16px 20px 12px;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:.5rem 1rem;justify-content:space-between;align-items:center">
+            <?php if ($focus_month !== null): ?>
+            <h3 style="margin:0;font-size:15px">Periods for <?= Formatter::escape(\Wbpms\Domain\Payroll\PayrollMonth::label($focus_month)) ?></h3>
+            <span style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center">
+                <span class="muted" style="font-size:13px"><?= count($periods) ?> of <?= $allPeriodCount ?> period(s)</span>
+                <a href="<?= $base ?>/hr/settings/periods" class="btn btn-secondary" style="font-size:12px;padding:4px 10px">Show All Periods</a>
+                <?php if (!empty($periods)): ?>
+                <a href="<?= $base ?>/hr/payroll/create?month=<?= Formatter::escape(rawurlencode($focus_month)) ?>" class="btn btn-primary" style="font-size:12px;padding:4px 10px">Create Payroll Run for <?= Formatter::escape(\Wbpms\Domain\Payroll\PayrollMonth::label($focus_month)) ?></a>
+                <?php endif; ?>
+            </span>
+            <?php else: ?>
             <h3 style="margin:0;font-size:15px">All Periods</h3>
             <span class="muted" style="font-size:13px"><?= count($periods) ?> period(s)</span>
+            <?php endif; ?>
         </div>
 
-        <?php if (empty($periods)): ?>
+        <?php if (empty($periods) && $focus_month !== null): ?>
+            <p class="muted" style="padding:2rem;text-align:center">No periods for <?= Formatter::escape(\Wbpms\Domain\Payroll\PayrollMonth::label($focus_month)) ?> yet. Use the form to generate them.</p>
+        <?php elseif (empty($periods)): ?>
             <p class="muted" style="padding:2rem;text-align:center">No periods yet. Use the form to create the first one.</p>
         <?php else: ?>
         <?php

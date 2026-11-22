@@ -4,14 +4,26 @@
  * Variables: $periods (list from PayrollService::periods()),
  *            $branches, $errors,
  *            $selectedPeriodId / $selectedBranchId (from ?period_id=&branch_id=, PAY-025)
+ *            $selectedMonth (YYYY-MM from ?month=, Settings → Payroll Periods, PAY-033)
  */
 $errors ??= [];
 $selectedPeriodId = (int) ($selectedPeriodId ?? 0);
 $selectedBranchId = (int) ($selectedBranchId ?? 0);
+$selectedMonth    = $selectedMonth ?? null;
 $selectedYm = '';
 foreach ($periods as $p) {
     if ((int) $p['payroll_period_id'] === $selectedPeriodId) {
         $selectedYm = substr($p['period_start'], 0, 7);
+    }
+}
+// A month from Settings: pick it in the month filter when no period is chosen
+// yet, as long as that month has a cutoff that starts in it.
+if ($selectedYm === '' && is_string($selectedMonth)) {
+    foreach ($periods as $p) {
+        if (substr($p['period_start'], 0, 7) === $selectedMonth) {
+            $selectedYm = $selectedMonth;
+            break;
+        }
     }
 }
 ?>
