@@ -1553,6 +1553,16 @@ final class PayrollService
                      AND (eba2.effective_to IS NULL OR eba2.effective_to > :ps6)
                    ORDER BY eba2.effective_from DESC, eba2.branch_assignment_id DESC
                    LIMIT 1
+              )
+                -- The Business Owner has no salary and is never paid, even if
+                -- an owner account was linked to an employee profile.
+                AND NOT EXISTS (
+                  SELECT 1
+                    FROM users uo
+                    JOIN role ro ON ro.role_id = uo.role_id
+                   WHERE uo.employee_id = e.employee_id
+                     AND ro.role_name   = 'BusinessOwner'
+                     AND uo.status     <> 'Archived'
               )"
         );
         $stmt->execute([

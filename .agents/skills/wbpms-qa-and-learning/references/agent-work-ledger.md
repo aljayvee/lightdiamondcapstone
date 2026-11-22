@@ -22,6 +22,25 @@ Detailed chronological log of modifications, integrations, and fixes performed b
 
 ## Recorded Entries
 
+### 2026-11-22 — Claude Code (Claude Opus 5.5) — Fix: the Business Owner has no salary
+- **Request**: Owner: the system gives the Business Owner a salary, which is wrong (the owner has no salary).
+- **Findings (prod)**: owner login user #41 (BusinessOwner) was linked to employee #40 EMP-002, position "Business Owner" (job_position #1, default ₱1,000), Active, salary ₱700 effective 11/21/26, branch + schedule + biometric enrollment; 0 attendance/payroll/request/bank rows. `PayrollService::eligibleEmployees()` pays anyone with a branch assignment + salary, so the next run would have paid the owner. The schema already intends `users.employee_id` NULL for the owner (user #1 has none).
+- **Code**: `AuthenticationPolicy::isLinkedOwner()` + `LINKED_OWNER_MESSAGE`; `UserService::create/update` refuse a Business Owner account with an employee link; `eligibleEmployees()` adds `NOT EXISTS` (non-archived BusinessOwner user linked to the employee) — also covers the pre-compute readiness list (same method). Test: `AuthenticationPolicyTest` (rule + source guard on the payroll query). Regression `USER-015`, `PAY-032` (260).
+- **Prod data (owner chose "Remove EMP-002")**: backup `/root/backups/wbpms/remove_owner_emp002_20261122_173107/` (`files.tgz` of the 3 files + `tables.sql` dump of users, employee, salary, branch/schedule assignment, biometric enrollment, job_position). Guarded transaction (state checks + exact row counts, SIGNAL otherwise): users #41 employee_id → NULL; deleted employee #40 with its 1 enrollment, 1 schedule, 1 branch, 1 salary row; job_position #1 "Business Owner" → Inactive; audit_logs #611. After: 18 employees (16 Active), 0 owner accounts linked, 15 Active salaries.
+- **Tests & Regression**:
+  - `php -l`: 5/5; PHPStan L6: 0 errors on the 3 app files
+  - PHPUnit Unit: VPS PHP 8.3 /tmp copy: 429 tests, 0 failures, 17 errors (all `could not find driver`); AuthenticationPolicyTest 5/5
+  - PHPUnit Integration: Not run
+  - Live: the new `NOT EXISTS` filter checked read-only on prod (keeps EMP-001/003, drops EMP-002) before deploy; md5 3/3; `/login` `/health` 200, owner/HR pages 302 signed out; no new app errors. Owner sign-in not tried (no credentials).
+  - Not committed.
+
+### 2026-11-22 — Claude Code (Claude Opus 5.5) — Integration: minimum wage rolled back to ₱460
+- **Request**: Owner: "rollback the minimum wage to original" (₱460, Wage Order RB XII-25).
+- **Prod data**: backup `/root/backups/wbpms/min_wage_rollback_20261122_172315/payroll_policy_version.sql`; guarded transaction (exactly 1 Approved policy, 1 row 476.00 → 460.00, SIGNAL otherwise) on `payroll_policy_version` #1; audit_logs #607 (`reverts_audit_log_id` 593).
+- **Code**: `DailyRateRule::FALLBACK_MINIMUM` 476 → 460; Settings note restored to the original text ("Wage Order XII-25: ₱460.00; Wage Order XII-26 Tranche 1: ₱476.00"); `DailyRateRuleTest` fallback assertion → 460; regression `EMP-017`, `EMP-030` back to ₱460 (258 cases). ₱755 cap and BDO-only unchanged.
+- **Deploy**: server diff = only these hunks; `files.tgz` in the same backup folder; PHP 8.3 `php -l` OK; md5 2/2; `/login` `/health` 200; live smoke: min 460, fallback 460, 459 refused, 460/755 OK, 756 refused.
+- **Tests**: `php -l` 4/4; PHPStan 0; Unit on VPS 8.3: targeted 24/24, full 427, 0 failures, 17 errors (no `pdo_sqlite`); Integration not run. Not committed.
+
 ### 2026-11-22 — Claude Code (Claude Opus 5.5) — Modification: daily rate cap ₱755 + BDO-only bank accounts
 - **Request**: Team message (forwarded by the developer): the adviser (Sir Ryan) set the daily-rate cap at ₱755, and LDE uses BDO only, so the bank form should allow BDO only.
 - **Findings (prod, read-only)**: 0 Active salaries above ₱755 (max ₱700); 1 position default above it ("Business Owner" ₱1,000 — Settings refuses to save that position until its default is ≤ ₱755); bank_details holds 4 Active rows, all BDO. `PayrollController` BDO slip/disbursement queries already filter `bank_name = 'BDO'`, so a non-BDO account silently missed the slip.

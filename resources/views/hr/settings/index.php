@@ -99,7 +99,7 @@ $v = static fn(string $key, string $fallback = ''): string =>
         <input type="hidden" name="_csrf" value="<?= htmlspecialchars($csrf ?? '', ENT_QUOTES, 'UTF-8') ?>">
         <div>
             <strong style="display:block;font-size:.95rem">DOLE Region XII Minimum Wage &amp; BIR TRAIN Threshold</strong>
-            <small class="muted">Enforced across Employee Create/Edit/Rehire, Position default rates, and Salary Management (Wage Order XII-26: ₱476.00 from 11/22/26, ₱501.00 from 01/01/27).</small>
+            <small class="muted">Enforced across Employee Create/Edit/Rehire, Position default rates, and Salary Management (Wage Order XII-25: ₱460.00; Wage Order XII-26 Tranche 1: ₱476.00).</small>
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:.75rem;align-items:flex-end">
             <div>

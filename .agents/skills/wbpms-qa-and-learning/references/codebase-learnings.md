@@ -357,9 +357,16 @@ Source of truth: `regression/generate_regression_tests.php` -> `regression/WBPMS
 - Root cause: `MAX_DAILY_RATE` was 1,000,000 inclusive — chosen to protect DECIMAL columns, so it never caught an extra zero. Position defaults had no server ceiling.
 - Fix: one rule, `Domain/Validation/DailyRateRule` (floor = Settings minimum wage, ceiling ₱10,000), used by Employee Add/Edit/Rehire, Salary Management and position defaults; views read the same constants for `min`/`max`/`data-msg-max`.
 - Prevention rule: DOLE sets only a floor (NCR ₱755 is the highest minimum in 2026, not a maximum). Keep the ceiling a realistic typo guard and change it in `DailyRateRule` only. A new Region XII wage order is a Settings change (`payroll_policy_version.minimum_daily_wage`, edited in place, not versioned), not a code change; the ₱476 in code is only a fallback. Next step: ₱501 on 01/01/27.
+- Update (same day): the owner rolled the minimum wage back to ₱460 (Settings value and `FALLBACK_MINIMUM`). Confirm with the owner before applying a new wage order — it is a business decision, not automatic.
 - Update (same day): the adviser set the cap to ₱755 (NCR minimum used as a company cap). The Settings minimum wage is now also limited to ≤ `DailyRateRule::MAX`, so the floor can never exceed the ceiling.
 
 ## 2026-11-22 — Bank accounts are BDO only (Claude Code)
 - Symptom: the bank form offered BPI, Metrobank, … and free text, but `PayrollController` BDO slip/disbursement queries use `bank_name = 'BDO'`, so any other bank silently dropped the employee from the slip.
 - Fix/rule: `FieldRules::PAYROLL_BANK` + `payrollBank()`; the form shows a read-only BDO field and the server refuses anything else (exact, case-sensitive). Change the bank there only.
+
+## 2026-11-22 — The Business Owner is not an employee (Claude Code)
+- Symptom: the owner had a ₱700 daily rate and would have been paid by the next payroll run.
+- Root cause: HR created an employee profile (position "Business Owner") and the owner login was linked to it; nothing in User Management or payroll prevented it. Payroll pays every employee with a branch assignment and a salary.
+- Fix: `AuthenticationPolicy::isLinkedOwner()` blocks the link in `UserService`; `PayrollService::eligibleEmployees()` skips owner-linked employees as a safety net; prod EMP-002 removed.
+- Prevention rule: owner accounts keep `users.employee_id` NULL. Only HR Head and Employee accounts have employee profiles, salaries and payroll.
 

@@ -23,9 +23,9 @@ final class DailyRateRuleTest extends TestCase
         self::assertSame(DailyRateRule::MAX, SalaryService::MAX_DAILY_RATE);
     }
 
-    public function testFallbackMinimumIsWageOrderXii26FirstTranche(): void
+    public function testFallbackMinimumIsWageOrderXii25(): void
     {
-        self::assertSame(476.00, DailyRateRule::FALLBACK_MINIMUM);
+        self::assertSame(460.00, DailyRateRule::FALLBACK_MINIMUM);
         self::assertLessThan(DailyRateRule::MAX, DailyRateRule::FALLBACK_MINIMUM);
     }
 

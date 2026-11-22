@@ -23,11 +23,11 @@ final class DailyRateRule
     public const MAX = 755.00;
 
     /**
-     * Used only when the payroll policy cannot be read. Wage Order
-     * RB XII-26, first tranche, effective 22 November 2026 (non-agriculture,
-     * retail and service). The second tranche (₱501) starts 1 January 2027.
+     * Used only when the payroll policy cannot be read. Wage Order RB XII-25
+     * (non-agriculture, retail and service). Briefly ₱476 (RB XII-26) on
+     * 2026-11-22, rolled back to ₱460 the same day at the owner's request.
      */
-    public const FALLBACK_MINIMUM = 476.00;
+    public const FALLBACK_MINIMUM = 460.00;
 
     /**
      * Null when the rate is acceptable, otherwise a message for the user.

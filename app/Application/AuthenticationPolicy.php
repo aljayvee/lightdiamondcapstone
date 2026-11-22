@@ -24,6 +24,18 @@ final class AuthenticationPolicy
         return $roleName === 'Employee' && $employeeId === null;
     }
 
+    public const LINKED_OWNER_MESSAGE =
+        'A Business Owner account cannot be linked to an employee profile. The owner is not on payroll and has no salary.';
+
+    /**
+     * The Business Owner is not an employee: no employee profile, no salary,
+     * never on payroll (users.employee_id is nullable for this reason).
+     */
+    public static function isLinkedOwner(string $roleName, ?int $employeeId): bool
+    {
+        return $roleName === 'BusinessOwner' && $employeeId !== null;
+    }
+
     /**
      * Validate password complexity and optional non-reuse against current password hash.
      *

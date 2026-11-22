@@ -25,6 +25,8 @@ use Wbpms\Infrastructure\Database\Connection;
  *     Active → Inactive → Active (toggle) and any → Archived (one-way).
  *   - Employee-role accounts require employee_id. Unlinking an existing
  *     Employee account automatically deactivates it.
+ *   - Business Owner accounts are never linked to an employee profile (the
+ *     owner has no salary and is never on payroll).
  *   - All mutations are audited via audit_logs when an acting_user_id is supplied.
  *
  * No SQL belongs in controllers; all queries live here.
@@ -295,6 +297,9 @@ final class UserService
         if (AuthenticationPolicy::isUnlinkedEmployee($roleName, $employeeId)) {
             throw new RuntimeException('An Employee account must be linked to an employee profile.');
         }
+        if (AuthenticationPolicy::isLinkedOwner($roleName, $employeeId)) {
+            throw new RuntimeException(AuthenticationPolicy::LINKED_OWNER_MESSAGE);
+        }
         if ($employeeId !== null) {
             $this->assertEmployeeNotLinked($employeeId);
         }
@@ -373,6 +378,9 @@ final class UserService
                 throw new RuntimeException('An Employee account must be linked to an employee profile.');
             }
             $status = 'Inactive';
+        }
+        if (AuthenticationPolicy::isLinkedOwner($roleName, $employeeId)) {
+            throw new RuntimeException(AuthenticationPolicy::LINKED_OWNER_MESSAGE);
         }
         if ($employeeId !== null && $employeeId !== ($user['employee_id'] !== null ? (int) $user['employee_id'] : null)) {
             $this->assertEmployeeNotLinked($employeeId, $userId);
