@@ -187,17 +187,24 @@ final class DefenseFixesTest extends TestCase
         self::assertArrayHasKey('device_id', $errors);
         self::assertStringContainsString('not assigned to the employee\'s branch', $errors['device_id']);
 
-        // Valid case with Probationary Laborer on covered branch 1 and rate 476.00
+        // Valid case with Contractual Laborer on covered branch 1 and rate 476.00
+        $todayManila = new \DateTimeImmutable('today', new \DateTimeZone('Asia/Manila'));
         $validData = array_merge($baseData, [
             'birthdate' => '1998-05-15',
             'position' => 'Laborer',
-            'employee_type' => 'Probationary',
-            'effective_from' => (new \DateTimeImmutable('today', new \DateTimeZone('Asia/Manila')))->format('Y-m-d'),
+            'employee_type' => 'Contractual',
+            'contract_review_date' => $todayManila->modify('+6 months')->format('Y-m-d'),
+            'effective_from' => $todayManila->format('Y-m-d'),
             'branch_id' => '1',
             'daily_rate' => '476.00',
         ]);
         /** @var array<string,string> $validErrors */
         $validErrors = $validate->invoke($controller, $validData, false, $repo, null);
         self::assertSame([], $validErrors);
+
+        // Probationary is no longer accepted on Add/Edit Employee
+        $probErrors = $validate->invoke($controller, array_merge($validData, ['employee_type' => 'Probationary']), false, $repo, null);
+        self::assertArrayHasKey('employee_type', $probErrors);
+        self::assertStringContainsString('Regular or Contractual', $probErrors['employee_type']);
     }
 }

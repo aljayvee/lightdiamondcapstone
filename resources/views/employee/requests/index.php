@@ -97,7 +97,7 @@ $statusBadge = static function (string $status): string {
                 <div style="height:100%;width:<?= round($caPct) ?>%;background:<?= $caBar ?>;border-radius:3px;transition:width .3s"></div>
             </div>
             <div style="font-size:.75rem;color:#9ca3af;margin-top:.25rem">
-                Unpaid: ₱<?= number_format((float)$cashAdvanceOutstanding, 2) ?> &nbsp;·&nbsp; Max: ₱<?= number_format((float)$cashAdvanceMax, 2) ?>
+                Unpaid: ₱<?= number_format((float)$cashAdvanceOutstanding, 2) ?> &nbsp;·&nbsp; Max: ₱<?= number_format((float)$cashAdvanceMax, 2) ?>/month (₱500/wk)
             </div>
         </div>
         <?php else: ?>

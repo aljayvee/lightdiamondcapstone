@@ -7,6 +7,7 @@ namespace Wbpms\Application;
 use PDO;
 use RuntimeException;
 use Wbpms\Domain\CashAdvance\CashAdvanceDate;
+use Wbpms\Domain\CashAdvance\CashAdvanceMonthlyPolicy;
 use Wbpms\Domain\Leave\LeaveDayCounter;
 use Wbpms\Domain\Payroll\ApprovedOvertimeCalculator;
 use Wbpms\Domain\Requests\RequestFormBalances;
@@ -166,9 +167,6 @@ final class RequestService
             if ($amount === '' || !is_numeric($amount) || (float) $amount <= 0) {
                 throw new RuntimeException('Cash advance amount must be a positive number.');
             }
-            if ((float) $amount > 2000.00) {
-                throw new RuntimeException('Cash advance amount cannot exceed ₱2,000.00.');
-            }
 
             // The date the advance is given decides which payroll weeks repay it.
             $advanceDate = trim($data['advance_date'] ?? '');
@@ -180,6 +178,16 @@ final class RequestService
             if ($dateProblem !== null) {
                 throw new RuntimeException($dateProblem);
             }
+
+            // Monthly cap (₱2,000/month), remaining-paydays capacity (₱500/wk),
+            // and prior-month unpaid balance guard. [REQ-026]
+            $this->assertCashAdvanceEligible(
+                $this->connection->pdo(),
+                $employeeId,
+                (float) $amount,
+                $advanceDate,
+                0,
+            );
         }
 
         // --- Persist (header + detail in one transaction) --------------------
@@ -533,8 +541,9 @@ final class RequestService
                 $this->assertPayableRequest($row, $pdo);
             }
 
-            // REQ034: approved CashAdvance → create obligation in cash_advance_history
+            // REQ034: approved CashAdvance → re-check monthly cap with lock, then create obligation
             if ($row['type_name'] === 'CashAdvance') {
+                $this->assertPayableRequest($row, $pdo);
                 $amount = (string) ($row['amount_requested'] ?? '0.00');
                 $pdo->prepare(
                     "INSERT INTO cash_advance_history
@@ -1342,6 +1351,94 @@ final class RequestService
     }
 
     /**
+     * Enforces the monthly Cash Advance cap (₱2,000/month), same-month payoff
+     * capacity (₱500 × remaining open Friday paydays in that payday month),
+     * and prior-month unpaid balance block (Option A). [REQ-026]
+     *
+     * @throws RuntimeException with a user-safe explanation when not eligible.
+     */
+    private function assertCashAdvanceEligible(
+        PDO $pdo,
+        int $employeeId,
+        float $amount,
+        string $advanceDate,
+        int $excludeRequestId = 0,
+    ): void {
+        if ($advanceDate === '' || !$this->isValidDate(substr($advanceDate, 0, 10))) {
+            throw new RuntimeException('Cash advance date is required (MM/DD/YY).');
+        }
+
+        $cleanDate = substr($advanceDate, 0, 10);
+        $firstPayDate = CashAdvanceMonthlyPolicy::firstPayDate($cleanDate);
+        $window = CashAdvanceMonthlyPolicy::payMonthWindow($firstPayDate);
+
+        // 1. All non-cancelled CashAdvance requests in this payday month
+        //    (totals against ₱2,000/month cap, and pending ones against remaining capacity).
+        $reqStmt = $pdo->prepare(
+            "SELECT COALESCE(SUM(card.amount), 0) AS total_requested,
+                    COALESCE(SUM(CASE WHEN r.status IN ('Pending', 'HRApproved', 'Returned') THEN card.amount ELSE 0 END), 0) AS pending_requested
+               FROM request r
+               JOIN request_type rt ON rt.request_type_id = r.request_type_id
+               JOIN cash_advance_request_detail card ON card.request_id = r.request_id
+              WHERE r.employee_id = :employee_id
+                AND rt.type_name = 'CashAdvance'
+                AND r.status IN ('Pending', 'HRApproved', 'Returned', 'Approved')
+                AND card.advance_date BETWEEN :first_adv AND :last_adv
+                AND r.request_id <> :exclude_id"
+        );
+        $reqStmt->execute([
+            ':employee_id' => $employeeId,
+            ':first_adv'   => $window['first_advance_date'],
+            ':last_adv'    => $window['last_advance_date'],
+            ':exclude_id'  => $excludeRequestId,
+        ]);
+        $reqRow = $reqStmt->fetch(PDO::FETCH_ASSOC);
+        $alreadyRequestedInMonth = (float) ($reqRow['total_requested'] ?? 0.0);
+        $pendingInMonth = (float) ($reqRow['pending_requested'] ?? 0.0);
+
+        // 2. Active unpaid balances in this payday month vs earlier payroll months.
+        $balStmt = $pdo->prepare(
+            "SELECT COALESCE(SUM(CASE WHEN card.advance_date BETWEEN :bal_first_adv AND :bal_last_adv THEN cah.remaining_balance ELSE 0 END), 0) AS unpaid_in_month,
+                    COALESCE(SUM(CASE WHEN card.advance_date < :bal_prior_cutoff THEN cah.remaining_balance ELSE 0 END), 0) AS prior_unpaid
+               FROM cash_advance_history cah
+               JOIN cash_advance_request_detail card ON card.request_id = cah.request_id
+              WHERE cah.employee_id = :bal_employee_id
+                AND cah.status = 'Active'
+                AND cah.remaining_balance > 0"
+        );
+        $balStmt->execute([
+            ':bal_first_adv'    => $window['first_advance_date'],
+            ':bal_last_adv'     => $window['last_advance_date'],
+            ':bal_prior_cutoff' => $window['first_advance_date'],
+            ':bal_employee_id'  => $employeeId,
+        ]);
+        $balRow = $balStmt->fetch(PDO::FETCH_ASSOC);
+        $unpaidInMonth = (float) ($balRow['unpaid_in_month'] ?? 0.0);
+        $priorMonthUnpaid = (float) ($balRow['prior_unpaid'] ?? 0.0);
+
+        // 3. Approved paydays in this payday month (immutable — cannot repay this CA).
+        $approvedPayDates = $this->calendar->approvedPayDatesInRange(
+            $employeeId,
+            $window['first_pay_date'],
+            $window['last_pay_date'],
+            $pdo,
+        );
+
+        $result = CashAdvanceMonthlyPolicy::evaluate(
+            $amount,
+            $cleanDate,
+            $alreadyRequestedInMonth,
+            round($pendingInMonth + $unpaidInMonth, 2),
+            $priorMonthUnpaid,
+            $approvedPayDates,
+            true,
+        );
+        if (!$result['allowed']) {
+            throw new RuntimeException((string) $result['message']);
+        }
+    }
+
+    /**
      * Checks a Leave or Overtime request can still be paid: its dates are not
      * in an Approved payroll run, and (Leave) the credit covers the working
      * days. With $lockPdo (Owner approval, inside the transaction) the
@@ -1360,6 +1457,23 @@ final class RequestService
                 $employeeId,
                 $this->dateRange((string) $row['date_from'], (string) $row['date_to']),
                 'Overtime',
+            );
+            return 0.0;
+        }
+        if ($row['type_name'] === 'CashAdvance') {
+            $db = $lockPdo ?? $this->connection->pdo();
+            if ($lockPdo !== null) {
+                // Serialize concurrent Owner approvals for the same employee so two
+                // pending requests cannot both slip past the monthly cap. [REQ-026]
+                $lockPdo->prepare('SELECT employee_id FROM employee WHERE employee_id = :emp_id FOR UPDATE')
+                    ->execute([':emp_id' => $employeeId]);
+            }
+            $this->assertCashAdvanceEligible(
+                $db,
+                $employeeId,
+                (float) ($row['amount_requested'] ?? 0.0),
+                (string) ($row['advance_date'] ?? ''),
+                (int) $row['request_id'],
             );
             return 0.0;
         }

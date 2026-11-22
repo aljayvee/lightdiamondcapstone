@@ -170,11 +170,15 @@ final class RequestLifecycleTest extends IntegrationTestCase
 
     public function testOwnerApproveCreatesCashAdvanceObligation(): void
     {
+        // Use the first Monday of the current month so 4+ paydays remain and
+        // ₱2,000.00 is eligible regardless of what day the suite runs. [REQ-026]
+        $weekOneDate = (new \DateTimeImmutable('first monday of this month', new \DateTimeZone('Asia/Manila')))->format('Y-m-d');
+
         $requestId = $this->service->submit($this->employeeId, [
-            'request_type_id' => $this->cashAdvanceTypeId,
-            'reason'          => 'Emergency expense',
+            'request_type_id'  => $this->cashAdvanceTypeId,
+            'reason'           => 'Emergency expense',
             'amount_requested' => '2000.00',
-            'advance_date'     => date('Y-m-d'),
+            'advance_date'     => $weekOneDate,
         ]);
 
         $this->service->approve($requestId, $this->hrUserId);
@@ -192,6 +196,42 @@ final class RequestLifecycleTest extends IntegrationTestCase
         self::assertSame('2000.00', number_format((float) $obligation['original_amount'], 2, '.', ''));
         self::assertSame('2000.00', number_format((float) $obligation['remaining_balance'], 2, '.', ''));
         self::assertSame('Active', $obligation['status']);
+    }
+
+    public function testCashAdvanceEnforcesMonthlyCapAndRemainingPaydays(): void
+    {
+        // Week 4 of August 2025 (08/25/25 -> only 1 payday left: 08/29/25) allows ₱500, blocks ₱2,000.
+        try {
+            $this->service->submit($this->employeeId, [
+                'request_type_id'  => $this->cashAdvanceTypeId,
+                'reason'           => 'Late-month request too large',
+                'amount_requested' => '2000.00',
+                'advance_date'     => '2025-08-25',
+            ]);
+            self::fail('Expected RuntimeException for ₱2,000 CA in Week 4.');
+        } catch (RuntimeException $e) {
+            self::assertStringContainsString('₱500.00', $e->getMessage());
+        }
+
+        // ₱500 in Week 4 is accepted.
+        $id1 = $this->service->submit($this->employeeId, [
+            'request_type_id'  => $this->cashAdvanceTypeId,
+            'reason'           => 'Late-month small CA',
+            'amount_requested' => '500.00',
+            'advance_date'     => '2025-08-25',
+        ]);
+        $this->service->approve($id1, $this->hrUserId);
+        $this->service->ownerApprove($id1, $this->ownerUserId);
+
+        // Prior-month unpaid balance (Aug 2025) blocks a new CA in Sept 2025 (Option A).
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/prior-month balance/i');
+        $this->service->submit($this->employeeId, [
+            'request_type_id'  => $this->cashAdvanceTypeId,
+            'reason'           => 'New month while prior unpaid',
+            'amount_requested' => '500.00',
+            'advance_date'     => '2025-09-01',
+        ]);
     }
 
     // -----------------------------------------------------------------------

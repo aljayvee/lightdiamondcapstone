@@ -9,6 +9,7 @@ use DateTimeZone;
 use PDO;
 use RuntimeException;
 use Wbpms\Domain\CashAdvance\CashAdvanceDate;
+use Wbpms\Domain\CashAdvance\CashAdvanceMonthlyPolicy;
 use Wbpms\Domain\Payroll\HolidayCalendarCoverage;
 use Wbpms\Domain\Payroll\HolidayPayCalculator;
 use Wbpms\Domain\Payroll\HolidayRecord;
@@ -767,7 +768,8 @@ final class PayrollService
                 // --- Contributions, Withholding Tax & Cash Advance ---
                 // When gross pay is ₱0.00 (no worked days, no paid leave, no holiday pay),
                 // skip statutory employee contributions, withholding tax, and cash advance repayment.
-                $caHistoryId = null;
+                /** @var list<array{history_id:int,amount:float}> $caAllocations */
+                $caAllocations = [];
                 if ($grossPay <= 0.0) {
                     $sssEmployee  = 0.0;
                     $sssEmployer  = 0.0;
@@ -795,9 +797,14 @@ final class PayrollService
                         0.0,
                         round($grossPay - ($sssEmployee + $philEmployee + $pagEmployee + $lateDed + $undertimeDed + $incomeTax), 2)
                     );
-                    $caInfo       = $this->activeCashAdvanceInfo($pdo, $employeeId, (string) $periodEnd, $runId);
-                    $caHistoryId  = $caInfo['history_id'];
-                    $caDed        = round(min($caInfo['repayment'], $availableForCa), 2);
+                    $caAllocations = $this->activeCashAdvanceAllocations(
+                        $pdo,
+                        $employeeId,
+                        (string) $periodEnd,
+                        $runId,
+                        $availableForCa,
+                    );
+                    $caDed = round(array_sum(array_column($caAllocations, 'amount')), 2);
                 }
 
                 // --- Totals ---
@@ -899,18 +906,18 @@ final class PayrollService
                         $now,
                     );
                 }
-                if ($caDed > 0) {
+                foreach ($caAllocations as $caAlloc) {
                     $this->insertDeduction(
                         $pdo,
                         $payrollId,
                         'CashAdvance',
                         'Cash advance repayment',
                         1,
-                        $caDed,
-                        $caDed,
+                        $caAlloc['amount'],
+                        $caAlloc['amount'],
                         $now,
                         false,
-                        $caHistoryId !== null ? ['history_id' => $caHistoryId] : [],
+                        ['history_id' => $caAlloc['history_id']],
                     );
                 }
 
@@ -1645,19 +1652,29 @@ final class PayrollService
     }
 
     /**
-     * The weekly ₱500 repayment (ADR-0001) this run takes, and from which advance.
+     * Allocate the weekly ₱500 repayment (ADR-0001 / PAY-035) across one or
+     * more due advances (oldest first), capped by $availableForCa so net pay
+     * never goes below ₱0.00.
      *
      * Only advances dated on or before the run's period end are due, so a run
-     * for a past week never takes an advance given later. [PAY-031] Oldest
-     * advance first. The balance left is what is still owed after the
-     * repayments already taken in other payroll runs that are computed but
-     * not yet approved: computing June and November together cannot take the
-     * same last ₱500 twice (approval is what lowers remaining_balance).
+     * for a past week never takes an advance given later. [PAY-031] The balance
+     * left is what is still owed after repayments already taken in other runs
+     * that are computed but not yet approved: computing two weeks together
+     * cannot take the same last ₱500 twice (approval settles remaining_balance).
      *
-     * @return array{history_id:?int,repayment:float}
+     * @return list<array{history_id:int,amount:float}>
      */
-    private function activeCashAdvanceInfo(PDO $pdo, int $employeeId, string $periodEnd, int $runId): array
-    {
+    private function activeCashAdvanceAllocations(
+        PDO $pdo,
+        int $employeeId,
+        string $periodEnd,
+        int $runId,
+        float $availableForCa,
+    ): array {
+        if ($availableForCa <= 0.0) {
+            return [];
+        }
+
         $stmt = $pdo->prepare(
             "SELECT cah.history_id, cah.remaining_balance, card.advance_date
                FROM cash_advance_history cah
@@ -1671,22 +1688,27 @@ final class PayrollService
         $stmt->execute([':id' => $employeeId, ':period_end' => $periodEnd]);
         $advances = $stmt->fetchAll(PDO::FETCH_ASSOC);
         if ($advances === []) {
-            return ['history_id' => null, 'repayment' => 0.0];
+            return [];
         }
 
         $pendingByHistory = $this->cashAdvanceRepaymentsInOpenRuns($pdo, $employeeId, $runId);
+        $due = [];
         foreach ($advances as $row) {
             $historyId = (int) $row['history_id'];
             $owed = round((float) $row['remaining_balance'] - ($pendingByHistory[$historyId] ?? 0.0), 2);
             if ($owed > 0.0 && CashAdvanceDate::isDueBy((string) $row['advance_date'], $periodEnd)) {
-                return [
+                $due[] = [
                     'history_id' => $historyId,
-                    'repayment'  => min(500.0, $owed), // ₱500/week (ADR-0001)
+                    'owed'       => $owed,
                 ];
             }
         }
 
-        return ['history_id' => null, 'repayment' => 0.0];
+        return CashAdvanceMonthlyPolicy::allocateWeeklyRepayment(
+            $due,
+            $availableForCa,
+            CashAdvanceMonthlyPolicy::WEEKLY_INSTALLMENT,
+        );
     }
 
     /**

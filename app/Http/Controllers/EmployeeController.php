@@ -988,9 +988,9 @@ final class EmployeeController
             $errors['position'] = 'Position title must be 100 characters or fewer.';
         }
 
-        // Employee type: Regular, Probationary, or Contractual.
-        if (!in_array($data['employee_type'], ['Regular', 'Probationary', 'Contractual'], true)) {
-            $errors['employee_type'] = 'Employee type must be Regular, Probationary, or Contractual.';
+        // Employee type: Regular or Contractual.
+        if (!in_array($data['employee_type'], ['Regular', 'Contractual'], true)) {
+            $errors['employee_type'] = 'Employee type must be Regular or Contractual.';
         } elseif ($repo !== null && $data['position'] !== '') {
             $posMeta = $repo->positionMetaByTitle($data['position']);
             if ($posMeta !== null && (int) ($posMeta['requires_regular'] ?? 0) === 1 && $data['employee_type'] !== 'Regular') {
@@ -1090,8 +1090,8 @@ final class EmployeeController
             $errors['position'] = 'Position is required.';
         }
         $employeeType = (string) ($data['employee_type'] ?? '');
-        if (!in_array($employeeType, ['Regular', 'Probationary', 'Contractual'], true)) {
-            $errors['employee_type'] = 'Choose a valid employee type (Regular, Probationary, or Contractual).';
+        if (!in_array($employeeType, ['Regular', 'Contractual'], true)) {
+            $errors['employee_type'] = 'Choose a valid employee type (Regular or Contractual).';
         } elseif ($repo !== null && $position !== '') {
             $posMeta = $repo->positionMetaByTitle($position);
             if ($posMeta !== null && (int) ($posMeta['requires_regular'] ?? 0) === 1 && $employeeType !== 'Regular') {

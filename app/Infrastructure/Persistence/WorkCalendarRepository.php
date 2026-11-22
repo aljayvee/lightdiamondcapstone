@@ -169,4 +169,39 @@ final class WorkCalendarRepository extends AbstractRepository
 
         return $covered;
     }
+
+    /**
+     * Friday pay_dates in [$firstPayDate, $lastPayDate] where the employee
+     * already has a row in an Approved payroll run (immutable). [REQ-026]
+     *
+     * @return list<string> ascending Y-m-d pay_date values
+     */
+    public function approvedPayDatesInRange(
+        int $employeeId,
+        string $firstPayDate,
+        string $lastPayDate,
+        ?PDO $pdo = null,
+    ): array {
+        $db = $pdo ?? $this->pdo();
+        $stmt = $db->prepare(
+            "SELECT DISTINCT pp.pay_date
+               FROM payroll p
+               JOIN payroll_run pr    ON pr.payroll_run_id    = p.payroll_run_id
+               JOIN payroll_period pp ON pp.payroll_period_id = p.payroll_period_id
+              WHERE p.employee_id = :employee_id
+                AND pr.status = 'Approved'
+                AND pp.pay_date BETWEEN :first_pay_date AND :last_pay_date
+              ORDER BY pp.pay_date ASC"
+        );
+        $stmt->execute([
+            ':employee_id'    => $employeeId,
+            ':first_pay_date' => $firstPayDate,
+            ':last_pay_date'  => $lastPayDate,
+        ]);
+
+        return array_values(array_map(
+            static fn ($d): string => substr((string) $d, 0, 10),
+            $stmt->fetchAll(PDO::FETCH_COLUMN),
+        ));
+    }
 }

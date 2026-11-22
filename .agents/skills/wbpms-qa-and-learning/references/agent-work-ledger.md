@@ -22,6 +22,59 @@ Detailed chronological log of modifications, integrations, and fixes performed b
 
 ## Recorded Entries
 
+### 2026-11-23 — Claude Code (Claude Opus 5.5) — Integration: Production deploy of Antigravity's monthly cash-advance policy (`REQ-026`, `PAY-035`)
+- **AI Agent**: `Claude Code (Claude Opus 5.5)`
+- **Type**: `Integration`
+- **Approval**: Owner, in chat: "Deploy it now" (after being told Integration tests were not run).
+- **Pre-checks**: Pulled server copies of the 7 files. The 6 that already existed on the server matched `HEAD` (`666db81`) exactly (`diff --strip-trailing-cr`), so the only difference between local and server was Antigravity's `REQ-026`/`PAY-035` hunks (275+/33− in 6 files, plus the new `CashAdvanceMonthlyPolicy.php`). `EMP-032` files (`EmployeeController.php`, `edit.php`, `rehire.php`) were already live (server = local). Diff scan found no debug output, `window.confirm`, or `type="time"`. No migration.
+- **Deploy**: Backup `/root/backups/wbpms/req026_pay035_cash_advance_monthly_20261122_235942/` (`files.tgz` with the 6 existing files + `db.sql.gz`, `gzip -t` and "Dump completed" checked). LF copies staged in `/tmp`, `php -l` 7/7 on PHP 8.3.6, new `app/Domain/CashAdvance/` dir created with `app/Domain` owner/mode, `install -o www-data -g www-data -m 644`, `systemctl reload php8.3-fpm`. md5 live = staged 7/7. Temp files removed.
+- **Post-checks**: `/login` 200, `/health` 200 (`env: production`), `/employee/requests` and `/hr/requests` 302 to login (expected when signed out). All 4 touched classes autoload as `www-data`. No new `app-error.log` lines after the deploy; no nginx 5xx.
+- **Independent check before deploy**: full-project PHPStan L6 locally shows 3 errors, all in files this work did not touch (`AttendancePolicyEvaluator.php:124`, `AuthMiddleware.php:296/345`). Not fixed.
+- **Not done**: PHPUnit Integration not run; signed-in pages not tested live (agent does not sign in); not committed or pushed.
+- **Rollback**: `cd /var/www/wbpms && tar xzf <backup>/files.tgz && rm app/Domain/CashAdvance/CashAdvanceMonthlyPolicy.php && systemctl reload php8.3-fpm`.
+
+### 2026-11-23 — Antigravity (Gemini 4 Neon) — Modification: Monthly Cash Advance Cap, Remaining-Paydays Eligibility & Multi-Advance Weekly Allocation (`REQ-026`, `PAY-035`)
+- **AI Agent**: `Antigravity (Gemini 4 Neon)`
+- **Type**: `Modification`
+- **Investigation & Policy Alignment**: Read-only prod DB check confirmed Cris Tiad's (`EMP-009`) Request `#40` (₱300, `advance_date = 2025-08-04`) deducted in Week 3 (`Run #35`) because Week 3 was created/approved at 10:37–10:57 UTC, 5 hours before Weeks 1 (`Run #40`) and 2 (`Run #42`) were created at 15:55–16:01 UTC. Also verified on Week 4 (`Run #43`) that Cris Tiad's net pay before CA was ₱1,666.00 (₱2,820 gross − ₱1,154 statutory deductions), confirming a ₱2,000 Week 4 lump-sum would zero out net pay. Owner approved Option 2 + Option A: max ₱2,000/month, scaled by `₱500 × remaining open Friday paydays` in that payday month, blocking new requests while a prior-month balance remains unpaid, with zero DB migrations.
+- **Files Touched**: `app/Domain/CashAdvance/CashAdvanceMonthlyPolicy.php` (new), `app/Infrastructure/Persistence/WorkCalendarRepository.php`, `app/Application/RequestService.php`, `app/Application/PayrollService.php`, `resources/views/hr/requests/form.php`, `resources/views/employee/requests/form.php`, `resources/views/employee/requests/index.php`, `tests/Unit/CashAdvanceMonthlyPolicyTest.php` (new), `tests/Unit/RequestFormBalancesTest.php`, `tests/Integration/RequestLifecycleTest.php`, `regression/generate_regression_tests.php`, `regression/WBPMS_Regression_Test_Suite.xlsx`.
+- **Work Done**:
+  - Added pure domain `CashAdvanceMonthlyPolicy` mapping any `advance_date` to its Friday–Thursday cutoff's Friday `pay_date` month (contiguous windows, 5-Friday months capped at ₱2,000, month-boundary dates mapped cleanly to next month), subtracting already-Approved paydays, checking monthly cap + remaining payoff capacity + prior-month unpaid balance (Option A), and allocating weekly repayment across multiple active advances.
+  - Added read-only `WorkCalendarRepository::approvedPayDatesInRange()`.
+  - Enforced `CashAdvanceMonthlyPolicy` in `RequestService::submit()`, `approve()` (via `assertPayableRequest`), and `ownerApprove()` (with `SELECT employee_id FROM employee WHERE employee_id = :emp_id FOR UPDATE` lock inside the transaction).
+  - Updated `PayrollService::computeRun()` and replaced single-advance `activeCashAdvanceInfo()` with multi-advance `activeCashAdvanceAllocations()` inserting one `CashAdvance` deduction row per allocated `history_id` (respecting `uq_car_deduction_id` and `uq_car_history_payroll` and preserving the ₱0 net-pay floor).
+  - Updated HR New Request, Employee Submit Request, and Employee My Requests views with monthly cap copy and a live UTC-safe JS weekly eligibility hint.
+  - Added 23 unit tests in `CashAdvanceMonthlyPolicyTest`, updated `RequestFormBalancesTest`, fixed `date('Y-m-d')` flakiness + added monthly-policy coverage in `RequestLifecycleTest`, and added regression cases `REQ-026` and `PAY-035`.
+- **Tests & Regression**:
+  - `php -l`: Pass 11/11 (local PHP 8.2.12) + 10/10 (VPS PHP 8.3.6).
+  - PHPStan L6: `[OK] No errors` across all 4 modified/new `app/` files.
+  - PHPUnit Unit (VPS PHP 8.3.6 `/tmp` copy, cleaned up): Targeted 60/60 (445 assertions: `CashAdvanceMonthlyPolicyTest`, `CashAdvanceDateAndLeaveYearTest`, `RequestFormBalancesTest`, `NoEmojiIconsTest`, `SqlPlaceholderReuseTest`, `AuditLogInsertColumnsTest`); full Unit suite 504 tests, 1948 assertions, 0 failures, 18 known env errors (17 `pdo_sqlite` + 1 `EmployeeTestIdsAndBankSeeder` absent from prod dir).
+  - Local view smoke check: 3/3 edited views rendered with 0 PHP notices/warnings.
+  - Read-only MariaDB 10.11 prod SQL check (`SET SESSION TRANSACTION READ ONLY`, cleaned up): verified `approvedPayDatesInRange` (`08/08..08/29` for EMP-009), all-approved August refusal, Week 4 `2026-11-23` ₱2,000 refusal (`₱500.00` limit) & ₱500 allowance, and `activeCashAdvanceAllocations`.
+  - PHPUnit Integration: Not run (local PHP 8.2.12 / local XAMPP MariaDB stopped).
+  - Regression TC IDs: `REQ-026`, `PAY-035` (new; 269 total cases, 0 duplicates).
+- **Not done**: Local only — not deployed to VPS and not committed/pushed (awaiting owner approval).
+
+### 2026-11-23 — Antigravity (Gemini 4 Neon) — Modification: Remove `Probationary` from Employee Type dropdown & validation (`EMP-032`)
+- **AI Agent**: `Antigravity (Gemini 4 Neon)`
+- **Type**: `Modification`
+- **Request (owner)**: "remove the dropdown 'Probationary' in the system in adding employee"
+- **Pre-check (prod read-only)**: Verified 0 `Probationary` employees in production (`Regular` Active: 17, `Regular` Inactive: 3).
+- **Files Touched**: `resources/views/hr/employees/edit.php`, `resources/views/hr/employees/rehire.php`, `app/Http/Controllers/EmployeeController.php`, `tests/Unit/EmployeeTypeDropdownTest.php` (new), `tests/Unit/DefenseFixesTest.php`, `regression/generate_regression_tests.php`, `regression/WBPMS_Regression_Test_Suite.xlsx`.
+- **Work Done**:
+  - Removed `<option value="Probationary">` and Probationary JS/validation copy from `edit.php` (shared Add/Edit Employee form) and `rehire.php` (Rehire Employee form) so only `Regular` and `Contractual` are selectable.
+  - Updated `EmployeeController::validate()` and `validateRehire()` to accept only `['Regular', 'Contractual']` (server-side enforcement against tampered POSTs).
+  - Kept the DB ENUM and `ContractReviewPolicy` backward-compatible (no schema migration required).
+  - Updated `DefenseFixesTest.php` and added pure SQLite-free `EmployeeTypeDropdownTest.php` (3 tests).
+- **Tests & Regression**:
+  - `php -l`: Pass 6/6 (local PHP 8.2.12) + 5/5 (VPS PHP 8.3.6).
+  - PHPStan L6: `[OK] No errors` (`app/Http/Controllers/EmployeeController.php`).
+  - PHPUnit Unit (VPS PHP 8.3.6 `/tmp` copy, cleaned up): Targeted 16/16 (100 assertions: `EmployeeTypeDropdownTest` 3/3, `ContractReviewPolicyTest`, `NoEmojiIconsTest`); full Unit suite 481 tests, 1971 assertions, 0 failures, 17 pre-existing `pdo_sqlite` errors.
+  - PHPUnit Integration: Not run (PHPUnit 12 requires PHP >= 8.3 locally).
+  - Regression TC IDs: `EMP-032` (new; 267 total cases, 0 duplicates).
+- **Deploy (owner OK, 2026-11-23 05:40 Manila / 2026-11-22 22:40 CET)**: pre-deploy `diff --strip-trailing-cr` confirmed live copies of all 3 files differed only by this change's hunks. Backup `/root/backups/wbpms/emp032_no_probationary_20261122_224007/files.tgz` (+ `before.md5`); LF staging, `php -l` 3/3 on PHP 8.3.6, `install -o www-data -g www-data -m 644`, `systemctl reload php8.3-fpm`; md5 live = staged 3/3; `/login` `/health` 200, `/hr/employees` `/hr/employees/new` 302 signed out; live `www-data` check confirmed `validate(Probationary)` rejected and `edit.php`/`rehire.php` omit `Probationary`; `app-error.log` unchanged (23 lines).
+- **Not done**: Not committed or pushed.
+
 ### 2026-11-22 — Antigravity (Gemini 4 Neon) — Fix: Allow confirming `ReviewRequired` attendance as-is, show raw biometric punches on Adjust Attendance, and distinguish `INCOMPLETE` vs `REVIEW` matrix badges
 - **AI Agent**: `Antigravity (Gemini 4 Neon)`
 - **Type**: `Fix`

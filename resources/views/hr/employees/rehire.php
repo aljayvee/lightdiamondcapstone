@@ -44,7 +44,6 @@ $fieldError = static fn(string $key): string => isset($errors[$key])
                 <select id="employee_type" name="employee_type" required onchange="syncRehireReview()" class="<?= isset($errors['employee_type']) ? 'is-invalid' : '' ?>">
                     <?php $employeeType = (string) ($_POST['employee_type'] ?? ($employee['employee_type'] ?? 'Regular')); ?>
                     <option value="Regular" <?= $employeeType === 'Regular' ? 'selected' : '' ?>>Regular</option>
-                    <option value="Probationary" <?= $employeeType === 'Probationary' ? 'selected' : '' ?>>Probationary</option>
                     <option value="Contractual" <?= $employeeType === 'Contractual' ? 'selected' : '' ?>>Contractual</option>
                 </select>
                 <?= $fieldError('employee_type') ?>
@@ -158,7 +157,7 @@ $fieldError = static fn(string $key): string => isset($errors[$key])
             var row   = document.getElementById('contract_review_row');
             var input = document.getElementById('contract_review_date');
             if (!type || !row || !input) { return; }
-            var needs = type.value === 'Contractual' || type.value === 'Probationary';
+            var needs = type.value === 'Contractual';
             row.style.display = needs ? '' : 'none';
             input.disabled = !needs;
             input.required = needs;

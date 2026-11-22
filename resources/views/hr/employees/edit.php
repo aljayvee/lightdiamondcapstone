@@ -201,7 +201,6 @@ $err = static fn(string $key): string => isset($errors[$key])
                 <?php $currentEmployeeType = (string) ($employee['employee_type'] ?? ($_POST['employee_type'] ?? 'Regular')); ?>
                 <select id="employee_type" name="employee_type" onchange="syncContractReview()" class="<?= isset($errors['employee_type']) ? 'is-invalid' : '' ?>">
                     <option value="Regular"      <?= $sel($currentEmployeeType, 'Regular') ?>>Regular</option>
-                    <option value="Probationary" <?= $sel($currentEmployeeType, 'Probationary') ?>>Probationary</option>
                     <option value="Contractual"  <?= $sel($currentEmployeeType, 'Contractual') ?>>Contractual</option>
                 </select>
                 <?= $err('employee_type') ?>
@@ -223,7 +222,7 @@ $err = static fn(string $key): string => isset($errors[$key])
                     value="<?= Formatter::escape($reviewValue) ?>"
                     data-start="<?= Formatter::escape($reviewStart) ?>"
                     <?= $needsReview ? 'required' : 'disabled' ?>
-                    data-msg-required="Contract review date is required for Contractual and Probationary employees."
+                    data-msg-required="Contract review date is required for Contractual employees."
                     class="<?= isset($errors['contract_review_date']) ? 'is-invalid' : '' ?>">
                 <small class="muted">The date HR will review this employee's contract for renewal or regularisation.
                     The HR Head is notified <?= \Wbpms\Domain\Employee\ContractReviewPolicy::DUE_SOON_DAYS ?> days before.
@@ -237,7 +236,7 @@ $err = static fn(string $key): string => isset($errors[$key])
             var row   = document.getElementById('contract_review_row');
             var input = document.getElementById('contract_review_date');
             if (!type || !row || !input) { return; }
-            var needs = type.value === 'Contractual' || type.value === 'Probationary';
+            var needs = type.value === 'Contractual';
             row.style.display = needs ? '' : 'none';
             input.disabled = !needs;
             input.required = needs;

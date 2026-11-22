@@ -109,7 +109,7 @@ foreach ($types as $t) {
                     <strong id="bal-ca-out" style="font-size:1.2rem">—</strong> unpaid
                 </div>
                 <div style="font-size:.75rem;color:#9ca3af;margin-top:.15rem">
-                    Max: ₱<?= number_format(\Wbpms\Domain\Requests\RequestFormBalances::CASH_ADVANCE_MAX, 2) ?> per request
+                    Max: ₱<?= number_format(\Wbpms\Domain\Requests\RequestFormBalances::CASH_ADVANCE_MAX, 2) ?>/month (₱500/wk)
                 </div>
             </div>
         </div>
@@ -226,13 +226,13 @@ foreach ($types as $t) {
                            value="<?= $o('amount_requested') ?>"
                            min="1" max="2000" step="0.01"
                            style="width:100%;padding:.45rem .7rem;border:1px solid <?= isset($errors['amount_requested']) ? '#dc2626' : '#d1d5db' ?>;border-radius:4px;font-size:.9rem">
-                    <small style="color:#6b7280;font-size:.78rem">Maximum: ₱2,000.00 per request.</small>
+                    <small id="ca-week-cap-hint" style="color:#6b7280;font-size:.78rem">Maximum: ₱2,000.00/month (₱500.00 × remaining paydays in month).</small>
                     <?= $err('amount_requested') ?>
                 </div>
             </div>
             <p style="margin:0 0 1rem;font-size:.8rem;color:#6b7280">
-                The date the cash is given. The ₱500 weekly repayment starts in the payroll week that contains this date,
-                so use the earlier date when recording an advance from a past month. Payroll runs for weeks before it do not deduct it.
+                The date the cash is given. Repayments deduct ₱500.00/week starting in this cutoff so the advance is paid within the same payroll month
+                (max ₱2,000.00/month, scaled by remaining open paydays). New advances are blocked while a prior-month balance remains unpaid.
             </p>
         </div>
 
@@ -319,6 +319,41 @@ foreach ($types as $t) {
     document.getElementById('request_type_id').addEventListener('change', render);
     if (from) { from.addEventListener('change', render); from.addEventListener('input', render); }
     render();
+}());
+
+// Dynamic Cash Advance weekly cap hint based on advance_date. [REQ-026]
+(function () {
+    var advDate = document.getElementById('advance_date');
+    var amtInput = document.getElementById('amount_requested');
+    var hint = document.getElementById('ca-week-cap-hint');
+    if (!advDate || !amtInput || !hint) { return; }
+
+    var months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    function updateCapHint() {
+        var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(advDate.value || '');
+        if (!m) {
+            amtInput.max = '2000';
+            hint.textContent = 'Maximum: ₱2,000.00/month (₱500.00 × remaining paydays in month).';
+            return;
+        }
+        var y = parseInt(m[1], 10), mo = parseInt(m[2], 10) - 1, d = parseInt(m[3], 10);
+        var dt = new Date(Date.UTC(y, mo, d));
+        if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo || dt.getUTCDate() !== d) { return; }
+        var daysSinceFri = (dt.getUTCDay() + 2) % 7;
+        var firstPay = new Date(dt.getTime() + (7 - daysSinceFri) * 86400000);
+        var payYear = firstPay.getUTCFullYear();
+        var payMonth = firstPay.getUTCMonth();
+        var monthEnd = new Date(Date.UTC(payYear, payMonth + 1, 0));
+        var lastFri = new Date(monthEnd.getTime() - ((monthEnd.getUTCDay() + 2) % 7) * 86400000);
+        var paydays = Math.floor((lastFri.getTime() - firstPay.getTime()) / (7 * 86400000)) + 1;
+        var maxAmt = Math.min(2000, Math.max(0, paydays) * 500);
+        amtInput.max = String(maxAmt);
+        hint.textContent = 'Up to ₱' + maxAmt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+            + ' for this week (' + paydays + ' payday' + (paydays === 1 ? '' : 's') + ' left in ' + months[payMonth] + ' ' + payYear + ' × ₱500/wk).';
+    }
+    advDate.addEventListener('change', updateCapHint);
+    advDate.addEventListener('input', updateCapHint);
+    updateCapHint();
 }());
 </script>
 

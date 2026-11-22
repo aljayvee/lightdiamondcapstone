@@ -51,7 +51,8 @@ final class RequestFormBalancesTest extends TestCase
         self::assertStringContainsString('id="balance-panel"', $html);
         self::assertStringContainsString('id="bal-leave-left"', $html);
         self::assertStringContainsString('id="bal-ca-out"', $html);
-        self::assertStringContainsString('Max: ₱2,000.00 per request', $html);
+        self::assertStringContainsString('Max: ₱2,000.00/month (₱500/wk)', $html);
+        self::assertStringContainsString('id="ca-week-cap-hint"', $html);
         // Figures are embedded as one JSON object the script reads by year and employee.
         self::assertMatchesRegularExpression('/var data\s+= \{"currentYear":2026,/', $html);
         self::assertStringContainsString('"leave":{"2025":{"13":{"balance":2,"entitled":4}}}', $html);
