@@ -33,6 +33,7 @@ Detailed chronological log of modifications, integrations, and fixes performed b
   - PHPUnit Integration: Not run
   - Live: the new `NOT EXISTS` filter checked read-only on prod (keeps EMP-001/003, drops EMP-002) before deploy; md5 3/3; `/login` `/health` 200, owner/HR pages 302 signed out; no new app errors. Owner sign-in not tried (no credentials).
   - Not committed.
+- **Follow-up (owner: "Delete the position")**: the Inactive position still showed its ₱1,000 default. First guarded delete stopped (position had been re-activated in the UI at 17:37 Manila, so the `status = 'Inactive'` check failed; nothing changed). Re-ran with the status check dropped but the no-employee-reference check kept: job_position #1 "Business Owner" (Management, ₱1,000) deleted; audit_logs #615; backup `/root/backups/wbpms/delete_owner_position_20261122_174301/job_position.sql` (taken after the re-activation). Now 11 positions, all Active. `/login` `/health` 200.
 
 ### 2026-11-22 — Claude Code (Claude Opus 5.5) — Integration: minimum wage rolled back to ₱460
 - **Request**: Owner: "rollback the minimum wage to original" (₱460, Wage Order RB XII-25).
