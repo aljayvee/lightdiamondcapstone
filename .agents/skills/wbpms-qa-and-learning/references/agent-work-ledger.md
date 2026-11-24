@@ -22,6 +22,41 @@ Detailed chronological log of modifications, integrations, and fixes performed b
 
 ## Recorded Entries
 
+### 2026-11-23 — Antigravity (Gemini 4 Neon) — Fix: Re-importing attendance over cancelled batch with manual adjustments (`ATT-033`)
+- **AI Agent**: `Antigravity (Gemini 4 Neon)`
+- **Type**: `Fix`
+- **Files Touched**: `app/Infrastructure/Persistence/PdoAttendanceImportGateway.php`, `tests/Unit/CancelledAttendanceReimportTest.php` (new), `regression/generate_regression_tests.php`, `regression/WBPMS_Regression_Test_Suite.xlsx`
+- **Root Cause (prod `/var/www/wbpms/storage/private/logs/app-error.log`, 11× `10:29..10:49 Manila`)**:
+  - Cancelled July batch `#17` contained `attendance_id=9807` (`EMP-003`, `2026-07-29`), which had 2 append-only `attendance_adjustment` rows (`#24`, `#25`, FK `attendance_adjustment_ibfk_1` `ON DELETE RESTRICT`).
+  - `PdoAttendanceImportGateway::saveGeneratedAttendance()` line 492 executed `DELETE FROM attendance WHERE attendance_id = :id` before falling through to `INSERT`, hitting MySQL error `1451` and rolling back the entire import transaction.
+  - Twin edge case in `createImportBatch()` lines 95–106: re-uploading the exact same `file_checksum` as a cancelled batch with adjusted rows would hit the exact same `1451` FK constraint on `DELETE a FROM attendance a ...`.
+- **Work Done**:
+  - Updated `saveGeneratedAttendance()` to overwrite existing rows where `batch_status === 'Cancelled'` or `status === 'Cancelled'` in-place (`UPDATE attendance ... WHERE attendance_id = :id`), preserving `attendance_id` and its immutable `attendance_adjustment` history (matching `AttendanceAdjustmentService::createManualAttendance()`).
+  - Updated `createImportBatch()` to delete only unadjusted `Processing`/`Cancelled` attendance rows (`NOT EXISTS` on `attendance_adjustment`), detach any remaining adjusted rows (`status = 'Cancelled', import_batch_id = NULL, updated_at = :now`), and then delete the superseded `attendance_import_batch` row cleanly.
+  - Added `CancelledAttendanceReimportTest` (3 tests using an in-memory `PDO` double with zero `pdo_sqlite` dependency) and regression case `ATT-033`.
+- **Tests & Regression**:
+  - `php -l`: 3/3 Pass (local PHP 8.2.12), 2/2 Pass (VPS PHP 8.3.6).
+  - PHPStan L6: 0 errors (`app/Infrastructure/Persistence/PdoAttendanceImportGateway.php`).
+  - PHPUnit Unit (VPS PHP 8.3.6 `/tmp` copy): targeted 10/10 pass (336 assertions, 0 warnings incl. `CancelledAttendanceReimportTest`, `SqlPlaceholderReuseTest`, `NoEmojiIconsTest`, `AuditLogInsertColumnsTest`); full Unit suite 507 tests / 0 failures / 17 known `pdo_sqlite` errors.
+  - PHPUnit Integration: Not run (local PHP 8.2 / XAMPP MariaDB stopped).
+  - Live MariaDB 10.11 read-only check: `PDO::prepare` (`ATTR_EMULATE_PREPARES => false`) passed 3/3 on the new SQL statements.
+  - Regression TC IDs: `ATT-033` added (271 total, 0 duplicates).
+- **Deploy (owner said "yes then deploy")**:
+  - Diff verified live vs local LF = this fix only; backup `/root/backups/wbpms/att033_cancelled_reimport_20261123_030350/PdoAttendanceImportGateway.php`; installed `www-data:www-data 0644`; `php -l` OK; md5 match `131544bc377a45438fb893cf47ff2d97`; `systemctl reload php8.3-fpm`; `/login` 200, `/health` 200, `/hr/attendance/import` 302; `app-error.log` unchanged at 35 lines. Not committed.
+
+### 2026-11-23 — Claude Code (Claude Opus 5.5) — Fix (verification only): First PHPUnit Integration run on PHP 8.3 (VPS, isolated DB)
+- **AI Agent**: `Claude Code (Claude Opus 5.5)`
+- **Type**: `Fix` (test run; no app code changed)
+- **Setup**: `/tmp` copy of commit `e8db1f5` + local `vendor/`, no `.env` in the copy. Temporary DB `wbpms_test` and user `wbpms_itest` with privileges on `wbpms_test.*` only (prod `wbpms` unreachable by grants). Schema = `mysqldump --no-data` of prod (49 tables, 0 rows) + prod `phinxlog`. All dropped afterwards (only `wbpms` remains, user removed, temp files gone, `/health` 200).
+- **Finding — fresh install breaks on MariaDB**: `phinx migrate -e testing` on an empty DB stops at `20260904000010_update_payroll_period_to_sunday_friday.php:24` — `DROP CHECK` is MySQL-only syntax (MariaDB needs `DROP CONSTRAINT`). Prod already passed it. Not changed (rule: never edit migrations that already ran).
+- **Result (committed tests, empty prod schema, no seeds)**: 112 tests, 287 assertions — **98 passed, 13 errors, 1 failure, 0 skipped**. All 14 are test-side:
+  - 11 × `RequestLifecycleTest`: fixture inserts `Leave_<uniqid>` into `request_type.type_name`, an `ENUM('Leave','Overtime','CashAdvance')` → "Data truncated". Whole class (incl. Antigravity's new `testCashAdvanceEnforcesMonthlyCapAndRemainingPaydays`) cannot run against the real schema. With that fixed in the tmp copy, the class shows more drift: `leave_entitlement.year` column no longer exists, leave dates fall on no scheduled workday, fixture hire date = today blocks the CA date.
+  - 1 × `AttendanceAdjustmentServiceTest::testRawBiometricPunchesReturnsMatchedLivePunchesOnly`: `biometric_device` insert lacks the required `site_id`.
+  - 1 × `XlsPayrollCalculationIntegrationTest::testHrHeadOwnRequestRoutesDirectlyToOwnerApproval`: new `REQ-026` cap refuses the test's cash advance ("cannot exceed ₱500.00, 1 open payday left in November 2026") — test amount/date predates the policy and depends on today's date.
+  - 1 failure `XlsPayrollCalculationIntegrationTest::testComputeIsBlockedUntilHrConfirmsDaysThatWouldBeUnpaid`: `PAY-034` guard ("no holidays on file for 2026") fires first because the test adds no 2026 holidays.
+- **Passed and relevant to the deploy**: payroll cash-advance deduction tests against the real schema (`testPartialCashAdvanceCappedDeductionCarriesBalanceAcrossConsecutiveRuns`, `testZeroGrossSkipsDeductionsAndCashAdvanceSettlesOnlyOnApprovalWithIncomeTax`), all `PayrollImmutabilityTest`, `SalaryHistoryTest`, `ScheduleAssignmentOverlapTest`, `EmployeeTransferTest`, `UserLifecycleTest`, `SchemaInvariantsTest`.
+- **Not done**: test fixtures not fixed in the repo (owner decision pending); request submit → approve flow for `REQ-026` still has no passing integration test.
+
 ### 2026-11-23 — Claude Code (Claude Opus 5.5) — Integration: Production deploy of Antigravity's monthly cash-advance policy (`REQ-026`, `PAY-035`)
 - **AI Agent**: `Claude Code (Claude Opus 5.5)`
 - **Type**: `Integration`
@@ -703,6 +738,8 @@ Detailed chronological log of modifications, integrations, and fixes performed b
 
 | Date | AI Name | Type | Files / Scope | Summary of Work Done | Verification |
 |---|---|---|---|---|---|
+| 2026-11-23 | **Claude Code (Claude Opus 5.5)** | Fix | `PayrollController::payslipPrint` + `buildPayslipHtml`, regression `PAY-036` | Defense-day system check. Crawled 194 signed-in pages (Owner 63, HR 115, Employee 16) on a throwaway clone of prod DB + prod code (PHP 8.3, VPS). Found 1 bug: Owner payslip print "Back" linked to HR-only `/hr/payroll/{id}` → Access denied; now role-aware like timesheet print ("Back to Payroll Review"). Sandbox DB/user/files removed after. | `php -l` 265/265 (8.2) + 8.3; PHPStan L6 3 pre-existing dead-code notices, 0 in changed file; VPS Unit 504 tests / 0 fail / 17 known `pdo_sqlite`; crawl 0 app-error lines, 0 5xx, pages 10-77 ms (attendance PDF 4.7 s); live load 360/360 OK p50 0.16 s. Regression 270 (0 dupes). Deployed 2026-11-23 07:42 Manila (owner OK; diff = this fix only; backup `pay036_owner_payslip_back_20261123_004221`; 8.3 `php -l` OK; md5 1/1; `/login` `/health` 200; app-error.log unchanged at 23). Not committed. |
+| 2026-11-22 | **Claude Code (Claude Opus 5.5)** | Fix | `hr/reports/transaction-slips.php`, `docs/bdo-transaction-slip-layout.md`, `TransactionSlipStampPrintTest`, regression `REP-008` | HR photo of a real print (toolbar +1/+1): details landed 3.1–3.7 mm left, 0.1–1.1 mm low. Office printer offset now built in (`--cal-x` +3.4 mm, `--cal-y` −0.5 mm); ticks 0.65 mm left (glyph ink offset); fine-tuning starts at 0 (key `wbpms.slipNudge.v2`). | Homography on 20 slip points (≤0.4 mm); simulated shift on the photo OK. `php -l` 3/3; Unit on VPS 8.3: 471, 0 fail, 17 err (no `pdo_sqlite`), slip test 4/4; stub render: positions + old key ignored. Regression `REP-008` (265). Deployed (owner OK; diff = this fix only; backup `slip_calibration_20261122_155859`; 8.3 `php -l`; md5 OK; `/login` `/health` 200, slip pages 302; live render 0 notices). Not committed. |
 | 2026-11-21 | **Claude Code (Claude Opus 5.5)** | Integration (deploy) | VPS `/var/www/wbpms`: Antigravity's undeployed work (49 files), migrations `20261120000030` + `20261121000031`; removed `PositionController`/`StubController`/`UserManagementController` | Deployed Antigravity's `.xls` calculation + Capstone Defense fixes to production at the owner's request. Local was verified as a superset of every server-only copy before copying; migrations ran before the code swap. | Backup `/root/backups/wbpms/antigravity_defense_20261120_190502` (DB + files + removed controllers). Migration 031 dropped 8 legacy tables (0 rows each) and `employee.address_id` (all NULL). PHP 8.3 `php -l` 49/49; md5 49/49; real PHPUnit 12 Unit on VPS PHP 8.3 (temp copy): 164 tests, 18 errors (17 no `pdo_sqlite` on VPS, 1 pre-existing `@dataProvider` docblock in `MonthlyContributionCutoffTest`); rolled-back prod read smoke 7/7; `/login` `/health` 200. Not committed. |
 
 ### 2026-11-21 — Claude Code (Claude Opus 5.5) — Feature: Payroll run note for other branches

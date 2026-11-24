@@ -401,8 +401,15 @@ final class PayrollController
             return;
         }
 
+        // The Business Owner cannot open /hr/payroll/{id} (HR-only); send them
+        // back to their own review page, like the timesheet print does.
+        $isOwner = (AuthMiddleware::identity()['role_name'] ?? '') === 'BusinessOwner';
+
         header('Content-Type: text/html; charset=utf-8');
-        echo $this->buildPayslipHtml($data, backPath: '/hr/payroll/' . $runId);
+        echo $this->buildPayslipHtml(
+            $data,
+            backPath: $isOwner ? '/owner/payroll/' . $runId . '/review' : '/hr/payroll/' . $runId
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -834,7 +841,8 @@ final class PayrollController
             $html .= '<div class="no-print controls">';
             $html .= '<button onclick="window.print()" style="padding:6px 16px;cursor:pointer">' . \Wbpms\Http\View\Icon::svg('printer') . ' Print</button>';
             $html .= '<a href="' . $e($pdfUrl) . '" style="padding:6px 16px;background:#1d4ed8;color:#fff;text-decoration:none;border-radius:4px">' . \Wbpms\Http\View\Icon::svg('download') . ' Download PDF</a>';
-            $html .= '<a href="' . $e($base . $backPath) . '" style="padding:6px 16px;border:1px solid #d1d5db;border-radius:4px;text-decoration:none;color:#374151">' . \Wbpms\Http\View\Icon::svg('chevron-left') . ' Back to Payroll Run</a>';
+            $backLabel = str_starts_with($backPath, '/owner/') ? 'Back to Payroll Review' : 'Back to Payroll Run';
+            $html .= '<a href="' . $e($base . $backPath) . '" style="padding:6px 16px;border:1px solid #d1d5db;border-radius:4px;text-decoration:none;color:#374151">' . \Wbpms\Http\View\Icon::svg('chevron-left') . ' ' . $e($backLabel) . '</a>';
             $html .= '</div>';
         }
 

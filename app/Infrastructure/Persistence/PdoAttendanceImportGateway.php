@@ -96,8 +96,27 @@ final class PdoAttendanceImportGateway implements AttendanceImportGateway
             "DELETE a FROM attendance a
                JOIN attendance_import_batch aib ON aib.import_batch_id = a.import_batch_id
               WHERE aib.file_checksum = :cs
-                AND aib.status IN ('Processing', 'Cancelled')"
+                AND aib.status IN ('Processing', 'Cancelled')
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM attendance_adjustment aa
+                     WHERE aa.attendance_id = a.attendance_id
+                )"
         )->execute([':cs' => $sha256]);
+
+        // Preserve any cancelled/stale attendance row that has immutable
+        // attendance_adjustment audit entries (ON DELETE RESTRICT). Detach it
+        // from the superseded batch so the batch row can be removed cleanly;
+        // saveGeneratedAttendance() will update and re-attach it in-place.
+        $this->pdo->prepare(
+            "UPDATE attendance a
+               JOIN attendance_import_batch aib ON aib.import_batch_id = a.import_batch_id
+                SET a.status          = 'Cancelled',
+                    a.import_batch_id = NULL,
+                    a.updated_at      = :now
+              WHERE aib.file_checksum = :cs
+                AND aib.status IN ('Processing', 'Cancelled')"
+        )->execute([':now' => $now, ':cs' => $sha256]);
 
         $this->pdo->prepare(
             "DELETE FROM attendance_import_batch
@@ -485,13 +504,44 @@ final class PdoAttendanceImportGateway implements AttendanceImportGateway
         $existingRow = $existing->fetch(PDO::FETCH_ASSOC);
 
         if ($existingRow !== false) {
-            // If the existing row came from a cancelled batch, it is superseded —
-            // delete it and fall through to the normal INSERT below.
-            if ((string) $existingRow['batch_status'] === 'Cancelled') {
+            // If the existing row is Cancelled or came from a Cancelled batch,
+            // it is superseded — overwrite it in-place rather than DELETE+INSERT
+            // so attendance_id and any append-only attendance_adjustment audit
+            // history (ON DELETE RESTRICT) remain intact.
+            if (
+                (string) $existingRow['batch_status'] === 'Cancelled'
+                || (string) $existingRow['status'] === 'Cancelled'
+            ) {
                 $this->pdo->prepare(
-                    'DELETE FROM attendance WHERE attendance_id = :id'
-                )->execute([':id' => (int) $existingRow['attendance_id']]);
-                // Fall through to INSERT
+                    "UPDATE attendance
+                        SET branch_assignment_id = :ba_id,
+                            schedule_id          = :sch_id,
+                            time_in              = :time_in,
+                            time_out             = :time_out,
+                            hours_worked_minutes = :worked,
+                            late_minutes         = :late,
+                            undertime_minutes    = :undertime,
+                            overtime_minutes     = :overtime,
+                            status               = :status,
+                            source               = 'xls_import',
+                            import_batch_id      = :batch_id,
+                            updated_at           = :updated_at
+                      WHERE attendance_id = :id"
+                )->execute([
+                    ':ba_id'      => $baId,
+                    ':sch_id'     => $scheduleId,
+                    ':time_in'    => $timeIn,
+                    ':time_out'   => $timeOut,
+                    ':worked'     => $resolved['worked'],
+                    ':late'       => $resolved['late'],
+                    ':undertime'  => $resolved['undertime'],
+                    ':overtime'   => $overtime,
+                    ':status'     => $resolved['status'],
+                    ':batch_id'   => $batchId,
+                    ':updated_at' => $now,
+                    ':id'         => (int) $existingRow['attendance_id'],
+                ]);
+                return;
             } else {
                 $sameBranch     = (int) $existingRow['branch_id'] === $this->branchIdForAssignment($baId);
                 $existingStatus = (string) $existingRow['status'];
